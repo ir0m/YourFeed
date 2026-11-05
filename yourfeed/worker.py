@@ -14,7 +14,7 @@ from sqlalchemy.engine import Engine
 
 from yourfeed import config
 from yourfeed.db import get_engine
-from yourfeed.pipeline.run import run_cycle
+from yourfeed.pipeline.run import close_interrupted, run_cycle
 
 POLL_SECONDS = 30
 
@@ -64,6 +64,7 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="run one update now and exit")
     args = parser.parse_args()
     engine = get_engine()
+    close_interrupted(engine)
     if args.once:
         _print(run_cycle(engine) if has_work(engine) else {"status": "no_genres"})
         return

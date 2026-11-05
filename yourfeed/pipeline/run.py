@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
@@ -19,7 +20,7 @@ from yourfeed.fetch import SafeHttpClient
 from .collect import CANDIDATES, Collector, Searcher
 from .pagetext import RETRYABLE, Page, PageFetcher
 from .prompt import Style
-from .select import by_site, fill_by_weight, interleave
+from .select import by_site, fill_by_weight
 from .summarize import summarize
 from .topics import PER_UPDATE, make_topics
 
@@ -53,9 +54,11 @@ def load_candidates(connection: Connection, genre_id: Any, now: datetime, window
 
 class _Posting:
     def __init__(self, engine: Engine, http: SafeHttpClient, llm: LLMClient | None, now: datetime,
-                 run_id: int, call_cap: int, genres: dict[Any, dict[str, Any]]) -> None:
+                 run_id: int, call_cap: int, genres: dict[Any, dict[str, Any]], retention_hours: int) -> None:
         self.engine, self.llm, self.now = engine, llm, now
-        self.run_id, self.call_cap, self.genres = run_id, call_cap, genres
+        self.run_id, self.call_cap, self.genres, self.retention_hours = run_id, call_cap, genres, retention_hours
+        self.posted = 0
+        self.queues: dict[tuple[Any, int], deque[dict[str, Any]]] = {}
         self.fetcher = PageFetcher(http)
         self.calls = self.input_tokens = self.output_tokens = 0
         self.consecutive_errors = 0
@@ -130,31 +133,42 @@ class _Posting:
             """), {"id": row["id"], "title": title, "site": site_name})
         return "ok"
 
+    def _queue(self, genre: dict[str, Any], stage: int, window: timedelta | None) -> deque[dict[str, Any]]:
+        key = (genre["id"], stage)
+        if key not in self.queues:
+            with self.engine.connect() as connection:
+                rows = {row["id"]: row for row in load_candidates(connection, genre["id"], self.now, window,
+                                                                  genre["latest"]) if row["id"] not in self.tried}
+            self.queues[key] = deque(rows[item_id] for item_id in by_site([(row["id"], row["url"])
+                                                                           for row in rows.values()]))
+        return self.queues[key]
+
     def fill(self, genre_id: Any, target: int, stage: int) -> bool:
-        """Add summarized items from the genre's `stage`-th window until `target`; False when nothing is left."""
+        """Post items from the genre's `stage`-th window as they are summarized, until `target`;
+        False when nothing is left."""
         genre = self.genres[genre_id]
         windows = LATEST_WINDOWS if genre["latest"] else ANY_AGE_WINDOWS
         if stage >= len(windows):
             return False
         window = windows[stage]
-        accepted = self.accepted[genre_id]
         since = self.now - window if window else None
-        with self.engine.connect() as connection:
-            rows = {row["id"]: row for row in load_candidates(connection, genre_id, self.now, window, genre["latest"])
-                    if row["id"] not in self.tried}
-        for item_id in by_site([(row["id"], row["url"]) for row in rows.values()]):
-            if len(accepted) >= target:
-                return True
-            row = rows[item_id]
+        queue = self._queue(genre, stage, window)
+        accepted = self.accepted[genre_id]
+        while len(accepted) < target and queue:
+            row = queue.popleft()
+            if row["id"] in self.tried:
+                continue
             if row["has_summary"]:
-                self.tried.add(item_id)
-                accepted.append(item_id)
+                result = "ok"
             elif self.llm is not None and self.calls < self.call_cap:
                 result = self._summarize(genre, row, since)
-                if result != "later":  # an older page is tried again in a wider window
-                    self.tried.add(item_id)
-                if result == "ok":
-                    accepted.append(item_id)
+            else:
+                continue
+            if result != "later":  # an older page is tried again in a wider window
+                self.tried.add(row["id"])
+            if result == "ok":
+                accepted.append(row["id"])
+                self.posted += publish(self.engine, [(genre_id, row["id"])], self.retention_hours)
         return len(accepted) >= target
 
     def search_topics(self, genre: dict[str, Any]) -> list[str]:
@@ -179,6 +193,23 @@ class _Posting:
         return picked
 
 
+CLOSE_INTERRUPTED = """
+    UPDATE runs SET status = 'error', error = 'interrupted', finished_at = now() WHERE finished_at IS NULL
+"""
+
+
+def close_interrupted(engine: Engine) -> None:
+    """Close runs that were stopped midway, unless an update is running now."""
+    with engine.connect() as lock:
+        if not lock.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK}).scalar_one():
+            return
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(CLOSE_INTERRUPTED))
+        finally:
+            lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
+
+
 def run_cycle(engine: Engine, *, http: SafeHttpClient | None = None, llm: LLMClient | None = None,
               searcher: Searcher | None = None, now: datetime | None = None) -> dict[str, Any]:
     with engine.connect() as lock:
@@ -193,6 +224,7 @@ def run_cycle(engine: Engine, *, http: SafeHttpClient | None = None, llm: LLMCli
 def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | None, searcher: Searcher | None,
            now: datetime) -> dict[str, Any]:
     with engine.begin() as connection:
+        connection.execute(text(CLOSE_INTERRUPTED))  # the lock is held, so no other run is going on
         settings = dict(connection.execute(text("SELECT * FROM settings WHERE id = 1")).mappings().one())
         genres = [dict(row) for row in connection.execute(text("""
             SELECT * FROM genres WHERE weight > 0 ORDER BY position, created_at
@@ -214,7 +246,7 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | None, s
         except LLMError as exc:
             client, error = None, exc.code
         posting = _Posting(engine, http, client, now, run_id, total * CALLS_PER_POST,
-                           {genre["id"]: genre for genre in genres})
+                           {genre["id"]: genre for genre in genres}, settings["retention_hours"])
         posting.error = error
         for genre in genres:
             genre["search_topics"] = posting.search_topics(genre)
@@ -226,17 +258,15 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | None, s
             """), {"id": run_id, "found": found, "searches": collector.searches, "error": collector.error})
         targets = fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total,
                                  range(len(LATEST_WINDOWS)),
-                                 lambda genre_id: len(posting.accepted[genre_id]), posting.fill)
+                                 lambda genre_id: len(posting.accepted[genre_id]), posting.fill, step=1)
         for genre in genres:
             detail["genres"][str(genre["id"])] = {
                 "found": collector.found[genre["id"]], "found_target": found_targets[genre["id"]],
                 "posted": len(posting.accepted[genre["id"]]), "target": targets[genre["id"]]}
-        posted = publish(engine, interleave([[(genre["id"], item) for item in posting.accepted[genre["id"]]]
-                                             for genre in genres if posting.accepted[genre["id"]]]),
-                         settings["retention_hours"])
+        posted = posting.posted + publish(engine, [], settings["retention_hours"])
         forget_old_items(engine, now)
     except Exception as exc:
-        _finish(engine, run_id, "error", 0, posting, detail, (posting and posting.error) or type(exc).__name__)
+        _finish(engine, run_id, "error", posting.posted if posting else 0, posting, detail, (posting and posting.error) or type(exc).__name__)
         raise
     finally:
         if own_http:

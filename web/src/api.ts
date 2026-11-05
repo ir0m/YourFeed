@@ -21,6 +21,7 @@ export interface Detail {
 export interface Page {
   items: Card[]
   next_cursor: string | null
+  updating: boolean
 }
 
 export type Provider = 'openai' | 'anthropic' | 'claude_cli' | 'codex_cli' | 'gemini_cli'

@@ -3,7 +3,8 @@ import { api } from './api'
 import type { Card, Detail } from './api'
 import { Link, navigate } from './router'
 
-const CHECK_MS = 5 * 60 * 1000
+const UPDATING_MS = 5 * 1000
+const IDLE_MS = 60 * 1000
 
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric' })
 
@@ -61,6 +62,8 @@ export default function Timeline({ path }: { path: string }) {
   const seen = useRef(new Set<string>())
   const inFlight = useRef(false)
   const loaded = useRef(false)
+  const updating = useRef(false)
+  const keep = useRef<{ height: number; scrollY: number } | null>(null)
   const sentinel = useRef<HTMLDivElement>(null)
   const opener = useRef<{ element: HTMLElement | null; top: number; scrollY: number } | null>(null)
   const detailId = path.startsWith('/items/') ? path.split('/')[2] : null
@@ -74,7 +77,12 @@ export default function Timeline({ path }: { path: string }) {
       const page = await api.timeline(fromTop ? undefined : cursor.current ?? undefined)
       const fresh = page.items.filter((item) => !seen.current.has(item.id))
       fresh.forEach((item) => seen.current.add(item.id))
+      updating.current = page.updating
       if (fromTop && loaded.current) {
+        if (!fresh.length) return
+        // New posts go on top without moving what is being read.
+        keep.current = window.scrollY > 0
+          ? { height: document.documentElement.scrollHeight, scrollY: window.scrollY } : null
         setCards((current) => [...fresh, ...current])
       } else {
         cursor.current = page.next_cursor
@@ -92,6 +100,14 @@ export default function Timeline({ path }: { path: string }) {
 
   useEffect(() => { void load(false) }, [load])
 
+  useLayoutEffect(() => {
+    const saved = keep.current
+    if (!saved) return
+    keep.current = null
+    const grown = document.documentElement.scrollHeight - saved.height
+    window.scrollTo({ top: saved.scrollY + grown, behavior: 'instant' })
+  }, [cards])
+
   useEffect(() => {
     if (!sentinel.current) return
     const observer = new IntersectionObserver((entries) => {
@@ -102,10 +118,17 @@ export default function Timeline({ path }: { path: string }) {
   }, [cards.length, busy, done, error, load])
 
   useEffect(() => {
-    const check = () => { if (!document.hidden && loaded.current) void load(true) }
-    const timer = window.setInterval(check, CHECK_MS)
-    document.addEventListener('visibilitychange', check)
-    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', check) }
+    let timer = 0
+    let stopped = false
+    const check = async () => { if (!document.hidden && loaded.current) await load(true) }
+    const tick = async () => {
+      await check()
+      if (!stopped) timer = window.setTimeout(tick, updating.current ? UPDATING_MS : IDLE_MS)
+    }
+    timer = window.setTimeout(tick, UPDATING_MS)
+    const visible = () => { void check() }
+    document.addEventListener('visibilitychange', visible)
+    return () => { stopped = true; window.clearTimeout(timer); document.removeEventListener('visibilitychange', visible) }
   }, [load])
 
   function open(id: string, element: HTMLElement) {

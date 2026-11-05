@@ -6,12 +6,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from yourfeed.db import get_engine
+from yourfeed.db import WORKER_LOCK, get_engine
 from yourfeed.fetch import SafeHttpClient
 from yourfeed.llm import LLMResult
 from yourfeed.main import app
 from yourfeed.pipeline import run as run_module
-from yourfeed.pipeline.run import publish, run_cycle
+from yourfeed.pipeline.run import close_interrupted, publish, run_cycle
 from yourfeed.search.searxng import Result, SearchError
 
 NOW = datetime.now(timezone.utc)
@@ -163,8 +163,19 @@ def test_every_update_searches_the_candidates_and_fills_the_count(client, engine
     policy = create(client, "政策", 1, stance=0)
     create(client, "空", 5)
 
-    search, llm = FakeSearch(), FakeLLM()
+    class Watching(FakeLLM):
+        posted_before_call = []
+
+        def complete(self, system, messages, schema):
+            with engine.connect() as connection:
+                self.posted_before_call.append(
+                    connection.execute(text("SELECT count(*) FROM timeline_entries")).scalar_one())
+            return super().complete(system, messages, schema)
+
+    search, llm = FakeSearch(), Watching()
     result = run_cycle(engine, http=fake_http(), llm=llm, searcher=search)
+    # Each post appears as soon as its summary is ready.
+    assert llm.posted_before_call == [0, 0, 1, 2, 3, 4, 5]
     # 空 finds nothing, so its share of the 12 candidates goes to 科学 and 政策 by weight.
     assert result["found"] == 12 and result["search_error"] is None
     assert {key: value["found"] for key, value in result["genres"].items()} == {
@@ -183,7 +194,11 @@ def test_every_update_searches_the_candidates_and_fills_the_count(client, engine
     assert (result["target"], result["posted"]) == (6, 6)
     assert llm.calls == 7
     page = client.get("/v1/timeline").json()
-    assert len(page["items"]) == 6
+    assert len(page["items"]) == 6 and page["updating"] is False
+    with engine.connect() as connection:
+        connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": WORKER_LOCK})
+        assert client.get("/v1/timeline").json()["updating"] is True
+        connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
     with engine.connect() as connection:
         posted = connection.execute(text("""
             SELECT g.name, i.url FROM timeline_entries e JOIN items i ON i.id = e.item_id
@@ -222,6 +237,20 @@ def test_genres_without_weight_are_not_searched(client, engine, monkeypatch):
     search = FakeSearch()
     result = run_cycle(engine, http=fake_http(), llm=FakeLLM(), searcher=search)
     assert search.queries == [] and result["found"] == 0 and off["id"] not in result["genres"]
+
+
+def test_runs_stopped_midway_are_closed(engine):
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO runs (target) VALUES (5)"))
+    with engine.connect() as lock:
+        lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": WORKER_LOCK})
+        close_interrupted(engine)  # an update is running, so nothing changes
+        lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM runs")).scalar_one() == "running"
+    close_interrupted(engine)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT status, error FROM runs")).one() == ("error", "interrupted")
 
 
 class DeepSearch:

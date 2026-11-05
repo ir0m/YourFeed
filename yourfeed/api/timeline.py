@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from yourfeed.db import get_engine
+from yourfeed.db import WORKER_LOCK, get_engine
 
 router = APIRouter(prefix="/v1")
 PAGE_SIZE = 50
@@ -21,6 +21,13 @@ ENTRY_QUERY = """
     FROM timeline_entries e
     JOIN items i ON i.id = e.item_id
     JOIN genres g ON g.id = e.genre_id
+"""
+
+# True while the worker holds its lock, that is, while an update is running.
+UPDATING_QUERY = """
+    SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted
+                   AND classid = 0 AND objid = :key AND objsubid = 1
+                   AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))
 """
 
 
@@ -56,11 +63,12 @@ def timeline(cursor: str | None = None, engine: Engine = Depends(get_engine)) ->
         rows = connection.execute(text(ENTRY_QUERY + " WHERE e.added_at > :cutoff" + condition
                                        + " ORDER BY e.added_at DESC, e.id DESC LIMIT :limit"),
                                   params).mappings().all()
+        updating = connection.execute(text(UPDATING_QUERY), {"key": WORKER_LOCK}).scalar_one()
     items = [{"id": str(row["id"]), "title": row["title"], "body": row["facts"] + row["interpretation"],
               "added_at": row["added_at"].isoformat()} for row in rows]
     next_cursor = (f"{rows[-1]['added_at'].isoformat()}|{rows[-1]['id']}"
                    if len(rows) == PAGE_SIZE else None)
-    return {"items": items, "next_cursor": next_cursor}
+    return {"items": items, "next_cursor": next_cursor, "updating": updating}
 
 
 @router.get("/timeline/{entry_id}")

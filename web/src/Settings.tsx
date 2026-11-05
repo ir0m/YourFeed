@@ -25,6 +25,7 @@ const ERRORS: Record<string, string> = {
   search_limited: '検索の回数制限',
   search_timeout: '検索が応答しません',
   search_error: '検索でエラー',
+  interrupted: '中断',
 }
 const timeFormat = new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 

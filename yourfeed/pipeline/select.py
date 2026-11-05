@@ -46,18 +46,21 @@ def allocate(weights: Mapping[K, int], size: int) -> dict[K, int]:
 
 
 def fill_by_weight(weights: Mapping[K, int], total: int, windows: Sequence[W],
-                   count: Callable[[K], int], fill: Callable[[K, int, W], bool]) -> dict[K, int]:
+                   count: Callable[[K], int], fill: Callable[[K, int, W], bool],
+                   step: int | None = None) -> dict[K, int]:
     """Split `total` by weight, widening the window until it is reached; unfilled shares move to
-    the other keys. `fill` returns False when its window has nothing left. Returns the targets."""
+    the other keys. `fill` returns False when its window has nothing left. Returns the targets.
+    With `step`, the key furthest from its target goes next and adds at most `step` items."""
     keys = [key for key, weight in weights.items() if weight > 0]
     targets = {key: 0 for key in weights} | allocate({key: weights[key] for key in keys}, total)
     for window in windows:
         exhausted: set[K] = set()
         while True:
-            for key in keys:
-                if key not in exhausted and count(key) < targets[key]:
-                    if not fill(key, targets[key], window):
-                        exhausted.add(key)
+            while waiting := [key for key in keys if key not in exhausted and count(key) < targets[key]]:
+                key = waiting[0] if step is None else min(waiting, key=lambda other: count(other) / targets[other])
+                goal = targets[key] if step is None else min(targets[key], count(key) + step)
+                if not fill(key, goal, window):
+                    exhausted.add(key)
             short = total - sum(count(key) for key in keys)
             open_keys = [key for key in keys if key not in exhausted]
             if short <= 0 or not open_keys:
@@ -82,11 +85,3 @@ def by_site(items: Sequence[tuple[Any, str]]) -> list[Any]:
                 del queues[key]
     return ordered
 
-
-def interleave(groups: list[list[Any]]) -> list[Any]:
-    """Spread each group's posts evenly through one list."""
-    placed = []
-    for group_index, group in enumerate(groups):
-        for index, item in enumerate(group):
-            placed.append(((index + 0.5) / len(group), group_index, item))
-    return [item for _, _, item in sorted(placed, key=lambda entry: (entry[0], entry[1]))]

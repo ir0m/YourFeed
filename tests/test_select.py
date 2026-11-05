@@ -1,4 +1,4 @@
-from yourfeed.pipeline.select import allocate, by_site, fill_by_weight, interleave, matches
+from yourfeed.pipeline.select import allocate, by_site, fill_by_weight, matches
 
 
 def test_allocate_uses_largest_remainder_and_keeps_order_on_ties():
@@ -56,6 +56,13 @@ def test_by_site_alternates_sites_in_order():
     assert by_site(items) == ["a1", "b1", "a2", "a3"]
 
 
-def test_interleave_spreads_groups():
-    assert interleave([["a1", "a2", "a3", "a4"], ["b1", "b2"]]) == ["a1", "b1", "a2", "a3", "b2", "a4"]
-    assert interleave([]) == []
+def test_steps_take_turns_by_progress():
+    order = []
+
+    def fill(key, target, window):
+        order.append(key)
+        return True
+
+    counts = lambda key: order.count(key)  # noqa: E731
+    assert fill_by_weight({"a": 3, "b": 1}, 4, ["w"], counts, fill, step=1) == {"a": 3, "b": 1}
+    assert order == ["a", "b", "a", "a"]
