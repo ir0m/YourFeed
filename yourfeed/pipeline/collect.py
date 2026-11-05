@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from yourfeed.search.plan import MAX_PAGES, WINDOWS, GenreSearch, Stream, Window
+from yourfeed.search.plan import MAX_PAGES, GenreSearch, Stream
 from yourfeed.search.searxng import Result, SearchError
 
 from .select import fill_by_weight, matches
@@ -42,11 +42,16 @@ class Collector:
             self._genres[genre["id"]] = genre
             self._plans[genre["id"]] = GenreSearch(genre, offset=self.run_id + index)
             self.found[genre["id"]] = 0
-        return fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total, WINDOWS,
+        stages = range(max((len(plan.windows) for plan in self._plans.values()), default=0))
+        return fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total, stages,
                               lambda genre_id: self.found[genre_id], self._fill)
 
-    def _fill(self, genre_id: Any, target: int, window: Window) -> bool:
+    def _fill(self, genre_id: Any, target: int, stage: int) -> bool:
+        """Search the genre's `stage`-th window until `target`; False when it has nothing more."""
         plan = self._plans[genre_id]
+        if stage >= len(plan.windows):
+            return False
+        window = plan.windows[stage]
         while self.found[genre_id] < target:
             if self.stopped or self.searches >= MAX_SEARCHES:
                 return False
@@ -59,7 +64,7 @@ class Collector:
             self.found[genre_id] += added
         return True
 
-    def _read(self, genre_id: Any, stream: Stream, window: Window, limit: int) -> int:
+    def _read(self, genre_id: Any, stream: Stream, window: tuple[str, str | None], limit: int) -> int:
         self.searches += 1
         try:
             categories, time_range = window

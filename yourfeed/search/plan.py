@@ -7,9 +7,10 @@ from urllib.parse import urlsplit
 
 # (SearXNG categories, time range) in the order tried. None means no time limit.
 Window = tuple[str, str | None]
-WINDOWS: tuple[Window, ...] = (
+LATEST_WINDOWS: tuple[Window, ...] = (
     ("news", "day"), ("news", "week"), ("news", "month"),
     ("general", "week"), ("general,science", "month"), ("general,science", "year"), ("general,science", None))
+ANY_AGE_WINDOWS: tuple[Window, ...] = (("general", None), ("science", None))
 MAX_PAGES = 3
 
 
@@ -64,12 +65,20 @@ def rotate(values: list, offset: int) -> list:
 
 
 class GenreSearch:
-    """Search state for one genre during one update."""
+    """Search state for one genre during one update. Genres of any age search this update's topics."""
 
     def __init__(self, genre: dict, offset: int = 0) -> None:
+        latest = genre.get("latest", True)
+        exclude = list(genre.get("exclude_terms") or [])
+        self.windows = LATEST_WINDOWS if latest else ANY_AGE_WINDOWS
         self.sites = [Site.parse(url) for url in genre.get("sites") or []]
-        self.focus, self.discovery = queries(genre["name"], list(genre.get("focus_terms") or []),
-                                             list(genre.get("exclude_terms") or []))
+        if latest:
+            self.focus, self.discovery = queries(genre["name"], list(genre.get("focus_terms") or []), exclude)
+        else:
+            topics = [topic for topic in genre.get("search_topics") or [] if topic.strip()]
+            self.focus = []
+            self.discovery = [queries(topic, [], exclude)[1][0] for topic in topics] or queries(
+                genre["name"], [], exclude)[1]
         self.share = (genre.get("discovery_percent", 20) / 100) if self.focus else 1.0
         self.offset = offset
         self.open_taken = 0

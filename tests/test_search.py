@@ -102,3 +102,17 @@ def test_a_stream_never_gets_more_than_the_remaining_need():
     plan.taken(focus, 40)  # earlier windows found only focus results
     stream, limit = plan.next_stream(("news", "week"), 3)
     assert stream.discovery and limit == 3
+
+
+def test_genres_of_any_age_search_their_topics_without_a_time_limit():
+    genre = {"name": "思想", "latest": False, "sites": ["https://a.example"], "focus_terms": ["禅"],
+             "exclude_terms": ["広告"], "discovery_percent": 20, "search_topics": ["ストア派 倫理", "禅 修行"]}
+    plan = GenreSearch(genre)
+    assert plan.windows[0] == ("general", None)
+    stream, _ = plan.next_stream(plan.windows[0], 10)
+    assert stream.query == "ストア派 倫理 -広告 site:a.example"
+    plan.streams(plan.windows[0])[0][0].done = plan.streams(plan.windows[0])[0][1].done = True
+    stream, limit = plan.next_stream(plan.windows[0], 10)
+    assert (stream.query, stream.discovery, limit) == ("ストア派 倫理 -広告", True, 10)
+    without_topics = GenreSearch({**genre, "sites": [], "search_topics": []})
+    assert without_topics.next_stream(("general", None), 5)[0].query == "思想 -広告"

@@ -57,6 +57,8 @@ def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404)
     # gov.example's first result is an old page and its second has no date.
     published = NOW.date().isoformat()
+    if request.url.host == "deep.example":
+        published = ""
     if request.url.host == "gov.example":
         published = {"/n/day/1/0": "2026-01-01", "/n/day/2/0": ""}.get(request.url.path, published)
     return httpx.Response(200, content=page(f"記事{request.url.path}", published),
@@ -73,8 +75,12 @@ class FakeLLM:
 
     def __init__(self):
         self.calls = 0
+        self.topic_calls = 0
 
     def complete(self, system, messages, schema):
+        if "topics" in schema["properties"]:
+            self.topic_calls += 1
+            return LLMResult(json.dumps({"topics": ["広告 入門"] + [f"stoa {n}" for n in range(30)]}), 50, 10)
         self.calls += 1
         if self.calls == 1:  # the first answer is too short and gets one fix request
             return LLMResult(json.dumps({"skip": False, "title": "短い", "facts": "短い。", "interpretation": ""}))
@@ -216,3 +222,49 @@ def test_genres_without_weight_are_not_searched(client, engine, monkeypatch):
     search = FakeSearch()
     result = run_cycle(engine, http=fake_http(), llm=FakeLLM(), searcher=search)
     assert search.queries == [] and result["found"] == 0 and off["id"] not in result["genres"]
+
+
+class DeepSearch:
+    """Two results per page for general searches; nothing from other categories."""
+
+    def __init__(self):
+        self.queries = []
+
+    def search(self, query, *, page=1, categories="general", time_range=None):
+        self.queries.append((query, page, categories, time_range))
+        if categories != "general" or page > 3:
+            return []
+        slug = query.split()[1]
+        return [Result(f"https://deep.example/{slug}/{page}/{index}", f"deep {slug} {page}-{index}", "説明")
+                for index in range(2)]
+
+
+def test_genres_of_any_age_search_model_topics_and_use_undated_pages(client, engine, monkeypatch):
+    monkeypatch.setattr(run_module, "CANDIDATES", 6)
+    client.put("/v1/settings", json=settings_body(client, items_per_run=3), headers=SAME_ORIGIN)
+    space = client.post("/v1/genres", json=genre("宇宙"), headers=SAME_ORIGIN).json()
+    assert space["latest"] is True
+    client.delete(f"/v1/genres/{space['id']}", headers=SAME_ORIGIN)
+    thought = create(client, "思想", 1, latest=False, exclude_terms=["広告"])
+    assert thought["latest"] is False
+
+    search, llm = DeepSearch(), FakeLLM()
+    result = run_cycle(engine, http=fake_http(), llm=llm, searcher=search)
+    assert llm.topic_calls == 1
+    assert search.queries[:3] == [("stoa 0 -広告", 1, "general", None), ("stoa 1 -広告", 1, "general", None),
+                                  ("stoa 0 -広告", 2, "general", None)]
+    # Undated pages are used at once; the topic call counts as a model call.
+    assert (result["found"], result["posted"], result["llm_calls"]) == (6, 3, 5)
+    with engine.connect() as connection:
+        topics, index = connection.execute(text("SELECT topics, topic_index FROM genres")).one()
+    assert (topics[0], len(topics), index) == ("stoa 0", 30, 2)
+
+    search, llm = DeepSearch(), FakeLLM()
+    run_cycle(engine, http=fake_http(), llm=llm, searcher=search)
+    assert llm.topic_calls == 0 and search.queries[0][0] == "stoa 2 -広告"
+
+    # Switching back to the latest news drops the topics and the unposted candidates.
+    client.put(f"/v1/genres/{thought['id']}", json=genre("思想", exclude_terms=["広告"]), headers=SAME_ORIGIN)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT topics, topic_index FROM genres")).one() == ([], 0)
+        assert connection.execute(text("SELECT count(*) FROM items WHERE posted_at IS NULL")).scalar_one() == 0

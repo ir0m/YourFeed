@@ -4,9 +4,11 @@ import type { Genre } from './api'
 import { Link, navigate } from './router'
 
 const STANCES = ['事実のみ', '事実中心', '半々', '解釈多め']
+const FRESHNESS: [string, boolean][] = [['最新', true], ['問わない', false]]
 
 interface Form {
   name: string
+  latest: boolean
   sites: string
   focus_terms: string
   discovery_percent: string
@@ -17,12 +19,12 @@ interface Form {
 }
 
 const EMPTY: Form = {
-  name: '', sites: '', focus_terms: '', discovery_percent: '20', exclude_terms: '',
+  name: '', latest: true, sites: '', focus_terms: '', discovery_percent: '20', exclude_terms: '',
   min_chars: '100', max_chars: '160', stance: 1,
 }
 
 const toForm = (genre: Genre): Form => ({
-  name: genre.name, sites: genre.sites.join('\n'), focus_terms: genre.focus_terms.join('\n'),
+  name: genre.name, latest: genre.latest, sites: genre.sites.join('\n'), focus_terms: genre.focus_terms.join('\n'),
   discovery_percent: String(genre.discovery_percent), exclude_terms: genre.exclude_terms.join('\n'),
   min_chars: String(genre.min_chars), max_chars: String(genre.max_chars), stance: genre.stance,
 })
@@ -77,7 +79,7 @@ export default function GenreEdit({ id }: { id: string }) {
       return
     }
     const values = {
-      name: form.name.trim(), sites, focus_terms: lines(form.focus_terms),
+      name: form.name.trim(), latest: form.latest, sites, focus_terms: lines(form.focus_terms),
       discovery_percent: Number(form.discovery_percent), exclude_terms: lines(form.exclude_terms),
       min_chars: minChars, max_chars: maxChars, stance: form.stance,
     }
@@ -113,6 +115,15 @@ export default function GenreEdit({ id }: { id: string }) {
         <label className="field"><span>名前</span>
           <input className="text" required maxLength={40} value={form.name} onChange={set('name')} />
         </label>
+        <div className="field" role="radiogroup" aria-labelledby="latest-label"><span id="latest-label">新しさ</span>
+          <span className="segments">
+            {FRESHNESS.map(([label, value]) => <label key={label} className={form.latest === value ? 'selected' : ''}>
+              <input type="radio" name="latest" checked={form.latest === value}
+                onChange={() => setForm({ ...form, latest: value })} />
+              {label}
+            </label>)}
+          </span>
+        </div>
       </div>
 
       <div className="group">

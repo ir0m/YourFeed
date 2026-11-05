@@ -21,19 +21,22 @@ from .pagetext import RETRYABLE, Page, PageFetcher
 from .prompt import Style
 from .select import by_site, fill_by_weight, interleave
 from .summarize import summarize
+from .topics import PER_UPDATE, make_topics
 
 # Age limits for posts, tried in order until the count is filled. None means any age.
-WINDOWS = (timedelta(days=7), timedelta(days=30), None)
+LATEST_WINDOWS = (timedelta(days=7), timedelta(days=30), None)
+ANY_AGE_WINDOWS = (None,)
 RETRY_AFTER = timedelta(hours=3)
 KEEP_ITEMS = timedelta(days=90)
 MAX_CONSECUTIVE_ERRORS = 3
 CALLS_PER_POST = 8
 
 
-def load_candidates(connection: Connection, genre_id: Any, now: datetime,
-                    window: timedelta | None) -> list[dict[str, Any]]:
-    """Unposted candidates: latest search first, dated before undated, then in search order."""
-    return [dict(row) for row in connection.execute(text("""
+def load_candidates(connection: Connection, genre_id: Any, now: datetime, window: timedelta | None,
+                    dated_first: bool = True) -> list[dict[str, Any]]:
+    """Unposted candidates: latest search first, dated before undated if asked, then in search order."""
+    order = "i.published_at IS NULL, i.rank" if dated_first else "i.rank"
+    return [dict(row) for row in connection.execute(text(f"""
         SELECT i.id, i.title, i.url, i.published_at, (sm.item_id IS NOT NULL) AS has_summary
         FROM items i
         LEFT JOIN summaries sm ON sm.item_id = i.id
@@ -42,7 +45,7 @@ def load_candidates(connection: Connection, genre_id: Any, now: datetime,
           AND (CAST(:since AS timestamptz) IS NULL OR COALESCE(i.published_at, i.found_at) >= :since)
           AND (sm.item_id IS NOT NULL OR i.attempted_at IS NULL
                OR (i.skip_reason = ANY(:retryable) AND i.attempted_at < :retry_before))
-        ORDER BY i.run_id DESC NULLS LAST, i.published_at IS NULL, i.rank
+        ORDER BY i.run_id DESC NULLS LAST, {order}
     """), {"genre_id": genre_id, "since": now - window if window else None,
            "latest": now + timedelta(days=1), "retryable": sorted(RETRYABLE),
            "retry_before": now - RETRY_AFTER}).mappings()]
@@ -96,7 +99,7 @@ class _Posting:
         if since and published_at is None:
             return "later"  # undated pages wait for the widest window
         style = Style(genre["min_chars"], genre["max_chars"], genre["stance"], tuple(genre["focus_terms"]),
-                      genre["name"])
+                      genre["name"], genre["latest"])
         title = page.title or row["title"]
         site_name = page.site_name or (urlsplit(row["url"]).hostname or "").removeprefix("www.")
         try:
@@ -127,13 +130,17 @@ class _Posting:
             """), {"id": row["id"], "title": title, "site": site_name})
         return "ok"
 
-    def fill(self, genre_id: Any, target: int, window: timedelta | None) -> bool:
-        """Add summarized items until `target`; False when this genre has nothing left to try."""
+    def fill(self, genre_id: Any, target: int, stage: int) -> bool:
+        """Add summarized items from the genre's `stage`-th window until `target`; False when nothing is left."""
         genre = self.genres[genre_id]
+        windows = LATEST_WINDOWS if genre["latest"] else ANY_AGE_WINDOWS
+        if stage >= len(windows):
+            return False
+        window = windows[stage]
         accepted = self.accepted[genre_id]
         since = self.now - window if window else None
         with self.engine.connect() as connection:
-            rows = {row["id"]: row for row in load_candidates(connection, genre_id, self.now, window)
+            rows = {row["id"]: row for row in load_candidates(connection, genre_id, self.now, window, genre["latest"])
                     if row["id"] not in self.tried}
         for item_id in by_site([(row["id"], row["url"]) for row in rows.values()]):
             if len(accepted) >= target:
@@ -149,6 +156,27 @@ class _Posting:
                 if result == "ok":
                     accepted.append(item_id)
         return len(accepted) >= target
+
+    def search_topics(self, genre: dict[str, Any]) -> list[str]:
+        """This update's topics for a genre of any age; the model makes new ones when they run out."""
+        if genre["latest"]:
+            return []
+        topics, index = list(genre["topics"]), genre["topic_index"]
+        if index + PER_UPDATE > len(topics) and self.llm is not None:
+            try:
+                made, result = make_topics(self.llm, genre, topics)
+                self._count(1, result.input_tokens, result.output_tokens)
+            except LLMError as exc:
+                made, self.error = [], exc.code
+                if exc.fatal:
+                    self.llm = None
+            if made:
+                topics, index = made, 0
+        picked = topics[index:index + PER_UPDATE]
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE genres SET topics = :topics, topic_index = :index WHERE id = :id"),
+                               {"id": genre["id"], "topics": topics, "index": index + len(picked)})
+        return picked
 
 
 def run_cycle(engine: Engine, *, http: SafeHttpClient | None = None, llm: LLMClient | None = None,
@@ -180,21 +208,24 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | None, s
     collector = Collector(engine, searcher, run_id)
     posting: _Posting | None = None
     try:
+        error = None
+        try:
+            client = llm or make_client(settings)
+        except LLMError as exc:
+            client, error = None, exc.code
+        posting = _Posting(engine, http, client, now, run_id, total * CALLS_PER_POST,
+                           {genre["id"]: genre for genre in genres})
+        posting.error = error
+        for genre in genres:
+            genre["search_topics"] = posting.search_topics(genre)
         found_targets = collector.collect(genres, CANDIDATES)
         found = sum(collector.found.values())
         with engine.begin() as connection:
             connection.execute(text("""
                 UPDATE runs SET found = :found, searches = :searches, search_error = :error WHERE id = :id
             """), {"id": run_id, "found": found, "searches": collector.searches, "error": collector.error})
-        error = None
-        try:
-            client = llm or make_client(settings)
-        except LLMError as exc:
-            client, error = None, exc.code
-        by_id = {genre["id"]: genre for genre in genres}
-        posting = _Posting(engine, http, client, now, run_id, total * CALLS_PER_POST, by_id)
-        posting.error = error
-        targets = fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total, WINDOWS,
+        targets = fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total,
+                                 range(len(LATEST_WINDOWS)),
                                  lambda genre_id: len(posting.accepted[genre_id]), posting.fill)
         for genre in genres:
             detail["genres"][str(genre["id"])] = {

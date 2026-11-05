@@ -29,6 +29,7 @@ class Style:
     stance: int = 1
     focus_terms: tuple[str, ...] = field(default_factory=tuple)
     topic: str = ""
+    latest: bool = True
 
     def interpretation_range(self) -> tuple[int, int]:
         low, high = STANCE_SHARES[self.stance]
@@ -57,7 +58,8 @@ def system_prompt(style: Style) -> str:
         "- skip: 次のどれかなら true。そのときほかは空文字。"
         "本文から内容が分からない（目次、案内、エラー、題名と本文が対応しない など）。"
         "複数の記事の見出しを並べた一覧、トップページ、カテゴリーのページ。"
-        + (f"主題が「{style.topic}」と関係ない。" if style.topic else ""),
+        + (f"主題が「{style.topic}」と関係ない。" if style.topic else "")
+        + ("" if style.latest else "速報、告知、イベント、セール、人事、募集など、その時だけの話題。"),
         f"- title: 見出し。{TITLE_MAX}字以内。",
         f"- facts: 本文に書かれている事実の要約。{facts_low}〜{facts_high}字。評価や推測を入れない。",
         f"- interpretation: {interpretation}",

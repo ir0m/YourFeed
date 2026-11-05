@@ -55,6 +55,7 @@ class SettingsIn(BaseModel):
 
 class GenreIn(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+    latest: bool = True
     sites: Annotated[list[Site], AfterValidator(_unique), Field(max_length=20)] = Field(default_factory=list)
     focus_terms: Terms = Field(default_factory=list)
     exclude_terms: Terms = Field(default_factory=list)
@@ -74,7 +75,7 @@ class WeightIn(BaseModel):
     weight: int = Field(ge=0, le=100)
 
 
-SEARCH_FIELDS = ("name", "sites", "focus_terms", "exclude_terms", "discovery_percent")
+SEARCH_FIELDS = ("name", "latest", "sites", "focus_terms", "exclude_terms", "discovery_percent")
 STYLE_FIELDS = ("min_chars", "max_chars", "stance", "focus_terms")
 
 
@@ -134,7 +135,8 @@ def _genre(connection: Connection, genre_id: UUID) -> dict:
     row = connection.execute(text("SELECT * FROM genres WHERE id = :id"), {"id": genre_id}).mappings().one_or_none()
     if row is None:
         raise HTTPException(404, "not found")
-    return {"id": str(row["id"]), "name": row["name"], "weight": row["weight"], "sites": row["sites"],
+    return {"id": str(row["id"]), "name": row["name"], "weight": row["weight"], "latest": row["latest"],
+            "sites": row["sites"],
             "focus_terms": row["focus_terms"], "exclude_terms": row["exclude_terms"],
             "discovery_percent": row["discovery_percent"], "min_chars": row["min_chars"],
             "max_chars": row["max_chars"], "stance": row["stance"]}
@@ -151,9 +153,9 @@ def create_genre(body: GenreIn, engine: Engine = Depends(get_engine)) -> dict:
     try:
         with engine.begin() as connection:
             genre_id = connection.execute(text("""
-                INSERT INTO genres (name, sites, focus_terms, exclude_terms, discovery_percent,
+                INSERT INTO genres (name, latest, sites, focus_terms, exclude_terms, discovery_percent,
                                     min_chars, max_chars, stance, position)
-                VALUES (:name, :sites, :focus_terms, :exclude_terms, :discovery_percent,
+                VALUES (:name, :latest, :sites, :focus_terms, :exclude_terms, :discovery_percent,
                         :min_chars, :max_chars, :stance, (SELECT COALESCE(max(position) + 1, 0) FROM genres))
                 RETURNING id
             """), body.model_dump()).scalar_one()
@@ -168,14 +170,16 @@ def update_genre(genre_id: UUID, body: GenreIn, engine: Engine = Depends(get_eng
         with engine.begin() as connection:
             before = _genre(connection, genre_id)
             connection.execute(text("""
-                UPDATE genres SET name = :name, sites = :sites, focus_terms = :focus_terms,
+                UPDATE genres SET name = :name, latest = :latest, sites = :sites, focus_terms = :focus_terms,
                   exclude_terms = :exclude_terms, discovery_percent = :discovery_percent,
                   min_chars = :min_chars, max_chars = :max_chars, stance = :stance, updated_at = now()
                 WHERE id = :id
             """), {**body.model_dump(), "id": genre_id})
             if any(before[key] != getattr(body, key) for key in SEARCH_FIELDS):
-                # Candidates found with the old search are dropped; the next update searches again.
+                # Candidates and topics from the old search are dropped; the next update searches again.
                 connection.execute(text("DELETE FROM items WHERE genre_id = :id AND posted_at IS NULL"),
+                                   {"id": genre_id})
+                connection.execute(text("UPDATE genres SET topics = '{}', topic_index = 0 WHERE id = :id"),
                                    {"id": genre_id})
             elif any(before[key] != getattr(body, key) for key in STYLE_FIELDS):
                 # Summaries not yet posted were written for the old style.
