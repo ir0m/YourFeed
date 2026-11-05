@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: #fff; color: #111; font-size: 16px; line-height: 1.7; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid #111; outline-offset: 2px;
+}
+a { color: #111; }
+p { margin: 0; }
+
+.page { width: min(100%, 720px); min-height: 100vh; margin: 0 auto; padding: 16px 20px 80px; }
+.top { display: flex; justify-content: flex-end; margin-bottom: 12px; font-size: 14px; }
+.top-start { justify-content: flex-start; }
+.top a { text-decoration: none; }
+.top a:hover { text-decoration: underline; }
+
+.cards { display: grid; gap: 12px; }
+.card { border: 1px solid #111; background: #fff; }
+.card-open { display: grid; width: 100%; gap: 9px; padding: 22px 24px; border: 0;
+  background: transparent; text-align: left; }
+.card-open:hover, .card-open:focus-visible { background: #f5f5f5; }
+.card-title { font-size: 20px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.card-body { line-height: 1.75; overflow-wrap: anywhere; }
+.end { min-height: 24px; }
+.notice { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-top: 16px; padding: 12px 16px; border: 1px solid #111; }
+
+.detail { width: min(680px, calc(100% - 28px)); max-height: 88vh; padding: 32px;
+  border: 1px solid #111; border-radius: 0; background: #fff; color: #111; overflow-y: auto; }
+.detail::backdrop { background: rgb(0 0 0 / 25%); }
+.close { position: absolute; top: 14px; right: 14px; width: 34px; height: 34px; padding: 0;
+  border: 1px solid #111; background: #fff; font-size: 25px; line-height: 1; }
+.detail h2 { margin: 4px 42px 18px 0; font-size: 24px; line-height: 1.5; }
+.detail-text { font-size: 17px; line-height: 1.8; }
+.detail-interpretation { margin-top: 18px; }
+.detail-label { font-size: 14px; font-weight: 700; }
+.detail-meta { display: grid; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #111;
+  font-size: 14px; overflow-wrap: anywhere; }
+
+.group { padding: 20px 0; border-top: 1px solid #111; }
+.settings > nav + .group, .settings form > .group:first-child { border-top: 0; padding-top: 4px; }
+.group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.group h2 { margin: 0; font-size: 16px; }
+.message { font-size: 14px; }
+
+.field { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); align-items: center; gap: 12px;
+  margin: 0 0 10px; }
+.field:last-child { margin-bottom: 0; }
+.field > span:first-child { font-size: 15px; }
+.field-top { align-items: start; }
+.field-top > span:first-child { padding-top: 7px; }
+.field input:not([type="checkbox"]):not([type="radio"]), .field select, .field textarea {
+  width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid #111; border-radius: 0; background: #fff;
+}
+.field textarea { resize: vertical; line-height: 1.6; }
+.field select { appearance: none; padding-right: 32px; background: #fff no-repeat right 10px center / 12px 8px
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23111' stroke-width='1.5'/%3E%3C/svg%3E"); }
+.field select { max-width: 18rem; }
+.field input.text { max-width: 28rem; }
+.with-unit { display: flex; align-items: center; gap: 8px; }
+.with-unit input:not([type="checkbox"]) { width: 6em !important; }
+.value { padding: 7px 0; }
+.value.url { overflow-wrap: anywhere; }
+.field-note { margin: -4px 0 10px calc(7.5rem + 12px); padding: 0; list-style: none; font-size: 14px;
+  overflow-wrap: anywhere; }
+
+.segments { display: inline-flex; flex-wrap: wrap; justify-self: start; border: 1px solid #111; }
+.segments label { padding: 6px 12px; border-left: 1px solid #111; cursor: pointer; font-size: 15px; }
+.segments label:first-child { border-left: 0; }
+.segments label.selected { background: #111; color: #fff; }
+.segments input { position: absolute; opacity: 0; pointer-events: none; }
+.segments label:has(input:focus-visible) { outline: 2px solid #111; outline-offset: 2px; }
+
+.actions { display: flex; align-items: center; gap: 12px; padding: 20px 0; border-top: 1px solid #111; }
+.actions .danger { margin-left: auto; }
+.actions button, .status button, .button {
+  display: inline-block; padding: 6px 16px; border: 1px solid #111; background: #fff; text-decoration: none;
+}
+.actions .primary { background: #111; color: #fff; }
+.actions button:disabled, .status button:disabled { opacity: 0.4; cursor: default; }
+
+.genre-columns, .genres li { display: grid; grid-template-columns: minmax(0, 1fr) 4.5em 3.5em; align-items: center; gap: 12px; }
+.genre-columns { padding: 0 4px 4px; font-size: 13px; }
+.genre-columns span { text-align: right; }
+.genres { margin: 0 0 16px; padding: 0; list-style: none; border-top: 1px solid #111; }
+.genres li { padding: 6px 4px; border-bottom: 1px solid #111; }
+.genre-name { padding: 4px 0; overflow-wrap: anywhere; text-decoration: underline; text-decoration-thickness: 1px;
+  text-underline-offset: 4px; }
+.genres input { width: 100%; padding: 4px 6px; border: 1px solid #111; border-radius: 0; background: #fff;
+  text-align: right; }
+.count { text-align: right; font-variant-numeric: tabular-nums; }
+.genres li.off .genre-name, .genres li.off .count { color: #777; }
+
+.status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+@media (max-width: 600px) {
+  .page { padding: 12px 12px 64px; }
+  .card-open { padding: 18px; }
+  .card-title { font-size: 18px; }
+  .detail { padding: 24px 18px; }
+  .detail h2 { font-size: 21px; }
+  .field { grid-template-columns: 1fr; gap: 4px; margin-bottom: 14px; }
+  .field select, .field input.text { max-width: none; }
+  .field-top > span:first-child { padding-top: 0; }
+  .field-note { margin-left: 0; }
+}

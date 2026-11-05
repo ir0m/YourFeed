@@ -1,0 +1,70 @@
+x-app: &app
+  image: yourfeed
+  build: .
+  environment:
+    DATABASE_URL: postgresql://yourfeed:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/yourfeed
+    YOURFEED_ALLOWED_HOSTS: ${YOURFEED_ALLOWED_HOSTS:-}
+    YOURFEED_TIMEZONE: ${YOURFEED_TIMEZONE:-Asia/Tokyo}
+    YOURFEED_ALLOW_PRIVATE_URLS: ${YOURFEED_ALLOW_PRIVATE_URLS:-}
+    OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    SEARXNG_URL: http://searxng:8080
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: yourfeed
+      POSTGRES_USER: yourfeed
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yourfeed -d yourfeed"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  searxng:
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:-latest}
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
+      FORCE_OWNERSHIP: "false"
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "127.0.0.1:${YOURFEED_SEARCH_PORT:-8888}:8080"
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:${YOURFEED_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "yourfeed.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      searxng:
+        condition: service_started
+
+volumes:
+  db:

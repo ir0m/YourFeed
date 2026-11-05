@@ -1,0 +1,15 @@
+[Unit]
+Description=YourFeed updates
+After=yourfeed-web.service
+
+[Service]
+WorkingDirectory=%h/YourFeed
+EnvironmentFile=%h/.config/yourfeed/env
+ExecStart=%h/YourFeed/.venv/bin/python -m yourfeed.worker
+Restart=on-failure
+Nice=10
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

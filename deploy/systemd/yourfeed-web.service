@@ -1,0 +1,14 @@
+[Unit]
+Description=YourFeed web
+
+[Service]
+WorkingDirectory=%h/YourFeed
+EnvironmentFile=%h/.config/yourfeed/env
+ExecStartPre=%h/YourFeed/.venv/bin/alembic upgrade head
+ExecStart=%h/YourFeed/.venv/bin/uvicorn yourfeed.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target
