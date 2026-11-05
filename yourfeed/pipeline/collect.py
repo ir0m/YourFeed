@@ -33,13 +33,11 @@ class Collector:
         self.stopped = False
         self.rank = 0
         self.found: dict[Any, int] = {}
-        self._genres: dict[Any, dict] = {}
         self._plans: dict[Any, GenreSearch] = {}
 
     def collect(self, genres: list[dict], total: int = CANDIDATES) -> dict[Any, int]:
         """Search until `total` new URLs are stored; returns each genre's target."""
         for index, genre in enumerate(genres):
-            self._genres[genre["id"]] = genre
             self._plans[genre["id"]] = GenreSearch(genre, offset=self.run_id + index)
             self.found[genre["id"]] = 0
         stages = range(max((len(plan.windows) for plan in self._plans.values()), default=0))
@@ -83,8 +81,7 @@ class Collector:
         stream.seen.update(result.url for result in results)
         if not fresh or stream.page > MAX_PAGES:
             stream.done = True  # no more pages, or the engine repeats the same page
-        genre = self._genres[genre_id]
-        exclude = list(genre.get("exclude_terms") or [])
+        exclude = self._plans[genre_id].excludes.get(stream.locale, [])
         added = 0
         with self.engine.begin() as connection:
             for result in fresh:

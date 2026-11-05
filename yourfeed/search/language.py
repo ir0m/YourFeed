@@ -20,6 +20,15 @@ def language_of(locale: str) -> str | None:
     return None if locale == "all" else locale.split("-")[0]
 
 
+# Languages search terms are translated into. Chinese keeps its two scripts apart.
+TARGET_NAMES = {"ja": "日本語", "en": "英語", "zh-CN": "中国語（簡体字）", "zh-TW": "中国語（繁体字）",
+                "ko": "韓国語", "fr": "フランス語", "de": "ドイツ語"}
+
+
+def translation_target(locale: str) -> str | None:
+    return locale if locale in TARGET_NAMES else language_of(locale)
+
+
 def languages_of(locales: list[str]) -> list[str] | None:
     """The languages to accept, or None for any."""
     languages = [language_of(locale) for locale in locales]

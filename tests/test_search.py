@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from yourfeed.search.plan import GenreSearch, Site, queries
+from yourfeed.search.plan import GenreSearch, Site, queries, terms_for
 from yourfeed.search.searxng import SearchError, Searxng, canonical_url, parse_results
 
 
@@ -139,3 +139,14 @@ def test_topics_are_searched_in_their_own_language():
     window = plan.windows[0]
     assert [stream.query for stream in plan.streams(window, "ja-JP")[2]] == ["ストア派の倫理"]
     assert [stream.query for stream in plan.streams(window, "en")[2]] == ["stoic ethics"]
+
+
+def test_each_locale_searches_its_translated_terms():
+    genre = {"name": "宇宙", "locales": ["ja-JP", "en-US"], "sites": [], "focus_terms": ["探査機"],
+             "exclude_terms": ["広告"], "discovery_percent": 20,
+             "translations": {"en": {"name": "space", "focus_terms": ["probe"], "exclude_terms": ["ads"]}}}
+    assert terms_for(genre, "en-US") == ("space", ["probe"], ["ads"])
+    assert terms_for(genre, "ja-JP") == ("宇宙", ["探査機"], ["広告"])
+    plan = GenreSearch(genre)
+    assert plan.queries["en-US"] == (["space probe -ads"], ["space -ads"])
+    assert plan.excludes["en-US"] == ["広告", "ads"]

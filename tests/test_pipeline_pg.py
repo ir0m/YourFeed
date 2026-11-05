@@ -87,8 +87,17 @@ class FakeLLM:
     def __init__(self):
         self.calls = 0
         self.topic_calls = 0
+        self.translate_calls = 0
 
     def complete(self, system, messages, schema):
+        if "translations" in schema["properties"]:
+            self.translate_calls += 1
+            asked = json.loads(messages[0]["content"])
+            mark = lambda words, language: [f"{word}-{language}" for word in words]  # noqa: E731
+            return LLMResult(json.dumps({"translations": [
+                {"language": language, "name": f"{asked['name']}-{language}",
+                 "focus_terms": mark(asked["focus_terms"], language),
+                 "exclude_terms": mark(asked["exclude_terms"], language)} for language in asked["languages"]]}))
         if "topics" in schema["properties"]:
             self.topic_calls += 1
             return LLMResult(json.dumps({"topics": ["広告 入門"] + [f"stoa {n}" for n in range(30)]}), 50, 10)
@@ -359,6 +368,8 @@ def test_untranslated_summaries_use_the_page_language(client, engine, monkeypatc
         systems = []
 
         def complete(self, system, messages, schema):
+            if "translations" in schema["properties"]:
+                return LLMResult(json.dumps({"translations": []}))  # keeps the written words
             self.systems.append(system)
             return LLMResult(json.dumps({"skip": False, "title": "Moon plan", "facts": "a" * 160,
                                          "interpretation": "b" * 60}))
@@ -369,3 +380,31 @@ def test_untranslated_summaries_use_the_page_language(client, engine, monkeypatc
     # with 60-120 characters scaled to 150-300.
     assert (result["posted"], len(llm.systems)) == (2, 2)
     assert "すべて英語で書きます" in llm.systems[0] and "合計を150〜300字" in llm.systems[0]
+
+
+class RecordingSearch:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, query, *, page=1, categories="general", time_range=None, language="all"):
+        self.calls.append((query, language))
+        return []
+
+
+def test_names_and_terms_are_translated_once_for_each_language(client, engine):
+    space = create(client, "宇宙", 1, locales=["ja-JP", "en"], focus_terms=["探査機"], exclude_terms=["広告"])
+    search, llm = RecordingSearch(), FakeLLM()
+    run_cycle(engine, http=fake_http(), llm=llm, searcher=search)
+    assert llm.translate_calls == 1
+    # Japanese is translated too (a no-op for Japanese words), so each language has its own terms.
+    assert ("宇宙-ja 探査機-ja -広告-ja", "ja-JP") in search.calls and ("宇宙-en 探査機-en -広告-en", "en") in search.calls
+    with engine.connect() as connection:
+        assert set(connection.execute(text("SELECT translations FROM genres")).scalar_one()) == {"ja", "en"}
+
+    llm = FakeLLM()
+    run_cycle(engine, http=fake_http(), llm=llm, searcher=RecordingSearch())
+    assert llm.translate_calls == 0
+
+    client.put(f"/v1/genres/{space['id']}", json=genre("宇宙", locales=["ja-JP", "en"]), headers=SAME_ORIGIN)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT translations FROM genres")).scalar_one() == {}

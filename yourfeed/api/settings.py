@@ -190,8 +190,9 @@ def update_genre(genre_id: UUID, body: GenreIn, engine: Engine = Depends(get_eng
                 # Candidates and topics from the old search are dropped; the next update searches again.
                 connection.execute(text("DELETE FROM items WHERE genre_id = :id AND posted_at IS NULL"),
                                    {"id": genre_id})
-                connection.execute(text("UPDATE genres SET topics = '{}', topic_index = 0 WHERE id = :id"),
-                                   {"id": genre_id})
+                connection.execute(text("""
+                    UPDATE genres SET topics = '{}', topic_index = 0, translations = '{}' WHERE id = :id
+                """), {"id": genre_id})
             elif any(before[key] != getattr(body, key) for key in STYLE_FIELDS):
                 # Summaries not yet posted were written for the old style.
                 connection.execute(text("""

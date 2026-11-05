@@ -24,6 +24,7 @@ from .prompt import TITLE_MAX, Style
 from .select import by_site, fill_by_weight
 from .summarize import summarize
 from .topics import PER_UPDATE, make_topics
+from .translate import missing, translate_terms
 
 # Age limits for posts, tried in order until the count is filled. None means any age.
 LATEST_WINDOWS = (timedelta(days=7), timedelta(days=30), None)
@@ -179,6 +180,27 @@ class _Posting:
                 self.posted += publish(self.engine, [(genre_id, row["id"])], self.retention_hours)
         return len(accepted) >= target
 
+    def search_terms(self, genre: dict[str, Any]) -> dict[str, Any]:
+        """The genre's name and terms in each chosen language; the model translates the missing ones."""
+        translations = dict(genre["translations"] or {})
+        languages = missing(genre)
+        if not languages or self.llm is None:
+            return translations
+        try:
+            made, result = translate_terms(self.llm, genre, languages)
+            self._count(1, result.input_tokens, result.output_tokens)
+        except LLMError as exc:
+            self.error = exc.code
+            if exc.fatal:
+                self.llm = None
+            return translations
+        if made:
+            translations.update(made)
+            with self.engine.begin() as connection:
+                connection.execute(text("UPDATE genres SET translations = CAST(:translations AS jsonb) WHERE id = :id"),
+                                   {"id": genre["id"], "translations": json.dumps(translations, ensure_ascii=False)})
+        return translations
+
     def search_topics(self, genre: dict[str, Any]) -> list[str]:
         """This update's topics for a genre of any age; the model makes new ones when they run out."""
         if genre["latest"]:
@@ -257,6 +279,7 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | None, s
                            {genre["id"]: genre for genre in genres}, settings["retention_hours"])
         posting.error = error
         for genre in genres:
+            genre["translations"] = posting.search_terms(genre)
             genre["search_topics"] = posting.search_topics(genre)
         found_targets = collector.collect(genres, CANDIDATES)
         found = sum(collector.found.values())
