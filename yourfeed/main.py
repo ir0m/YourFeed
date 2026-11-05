@@ -18,7 +18,7 @@ from .config import allowed_hosts, extra_hosts
 from .db import get_engine
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
-EXPECTED_REVISION = "0002_latest"
+EXPECTED_REVISION = "0003_locale"
 MAX_BODY_BYTES = 1_000_000
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
        "font-src 'self'; connect-src 'self'; manifest-src 'self'; object-src 'none'; "

@@ -24,8 +24,10 @@ class FakeSearch:
     def __init__(self, down=False):
         self.down = down
         self.queries = []
+        self.languages = set()
 
-    def search(self, query, *, page=1, categories="general", time_range=None):
+    def search(self, query, *, page=1, categories="general", time_range=None, language="all"):
+        self.languages.add(language)
         if self.down:
             raise SearchError("search_unavailable", fatal=True)
         self.queries.append((query, page, categories, time_range))
@@ -59,6 +61,15 @@ def handler(request: httpx.Request) -> httpx.Response:
     published = NOW.date().isoformat()
     if request.url.host == "deep.example":
         published = ""
+    if request.url.host == "en.example":
+        body = "".join(f"<p>Part {n}: the agency announced a new plan to land on the Moon, at a cost of 300 "
+                       f"billion yen.</p>" for n in range(6))
+        return httpx.Response(200, content=f"<html lang='en'><body><article>{body}</article></body></html>".encode(),
+                              headers={"Content-Type": "text/html; charset=utf-8"})
+    if request.url.host == "cn.example":
+        body = "<p>国家航天局宣布了新的月球探测计划，预计费用为三百亿元。</p>" * 12
+        return httpx.Response(200, content=f"<html lang='zh-CN'><body><article>{body}</article></body></html>".encode(),
+                              headers={"Content-Type": "text/html; charset=utf-8"})
     if request.url.host == "gov.example":
         published = {"/n/day/1/0": "2026-01-01", "/n/day/2/0": ""}.get(request.url.path, published)
     return httpx.Response(200, content=page(f"記事{request.url.path}", published),
@@ -128,7 +139,13 @@ def test_settings_api_validates_and_guards_requests(client, engine):
     assert client.get("/v1/settings", headers={"Host": "evil.example"}).status_code == 400
 
     only_name = client.post("/v1/genres", json={"name": "宇宙"}, headers=SAME_ORIGIN)
-    assert only_name.status_code == 201
+    assert only_name.status_code == 201 and only_name.json()["locales"] == ["ja-JP"]
+    assert only_name.json()["translate"] is True
+    for bad in (["xx-XX"], []):
+        assert client.post("/v1/genres", json={"name": "x", "locales": bad}, headers=SAME_ORIGIN).status_code == 422
+    mixed = client.post("/v1/genres", json={"name": "y", "locales": ["en", "all", "en"]}, headers=SAME_ORIGIN)
+    assert mixed.json()["locales"] == ["all"]
+    client.delete(f"/v1/genres/{mixed.json()['id']}", headers=SAME_ORIGIN)
     assert only_name.json()["sites"] == [] and only_name.json()["focus_terms"] == []
     created = client.post("/v1/genres", json=genre("科学", sites=["Example.com/Tech/", "https://lab.example"]),
                           headers=SAME_ORIGIN)
@@ -182,6 +199,7 @@ def test_every_update_searches_the_candidates_and_fills_the_count(client, engine
         science["id"]: 9, policy["id"]: 3, next(key for key in result["genres"]
                                                   if key not in (science["id"], policy["id"])): 0}
     assert search.queries[0] == ("科学 量子 -人事 site:lab.example", 1, "news", "day")
+    assert search.languages == {"ja-JP"}
     with engine.connect() as connection:
         rows = connection.execute(text("""
             SELECT i.url, i.title FROM items i JOIN genres g ON g.id = i.genre_id
@@ -259,7 +277,7 @@ class DeepSearch:
     def __init__(self):
         self.queries = []
 
-    def search(self, query, *, page=1, categories="general", time_range=None):
+    def search(self, query, *, page=1, categories="general", time_range=None, language="all"):
         self.queries.append((query, page, categories, time_range))
         if categories != "general" or page > 3:
             return []
@@ -297,3 +315,57 @@ def test_genres_of_any_age_search_model_topics_and_use_undated_pages(client, eng
     with engine.connect() as connection:
         assert connection.execute(text("SELECT topics, topic_index FROM genres")).one() == ([], 0)
         assert connection.execute(text("SELECT count(*) FROM items WHERE posted_at IS NULL")).scalar_one() == 0
+
+
+class MixedSearch:
+    """Chinese and Japanese pages in turn."""
+
+    def search(self, query, *, page=1, categories="general", time_range=None, language="all"):
+        if page > 1:
+            return []
+        return [Result(f"https://{host}/{index}", f"{host} {index}", "") for index in range(2)
+                for host in ("cn.example", "jp.example")]
+
+
+def test_pages_in_other_languages_are_skipped_before_the_model(client, engine, monkeypatch):
+    monkeypatch.setattr(run_module, "CANDIDATES", 4)
+    client.put("/v1/settings", json=settings_body(client, items_per_run=2), headers=SAME_ORIGIN)
+    create(client, "宇宙", 1)
+    llm = FakeLLM()
+    result = run_cycle(engine, http=fake_http(), llm=llm, searcher=MixedSearch())
+    assert (result["posted"], llm.calls) == (2, 3)
+    with engine.connect() as connection:
+        rows = connection.execute(text("SELECT url, skip_reason, posted_at IS NOT NULL FROM items ORDER BY url")).all()
+    assert [(url, reason, posted) for url, reason, posted in rows] == [
+        ("https://cn.example/0", "other_language", False), ("https://cn.example/1", "other_language", False),
+        ("https://jp.example/0", None, True), ("https://jp.example/1", None, True)]
+
+
+class EnglishSearch:
+    def search(self, query, *, page=1, categories="general", time_range=None, language="all"):
+        if page > 1:
+            return []
+        return [Result(f"https://{host}/{index}", f"{host} {index}", "") for index in range(2)
+                for host in ("en.example", "jp.example")]
+
+
+def test_untranslated_summaries_use_the_page_language(client, engine, monkeypatch):
+    monkeypatch.setattr(run_module, "CANDIDATES", 4)
+    client.put("/v1/settings", json=settings_body(client, items_per_run=2), headers=SAME_ORIGIN)
+    create(client, "space", 1, locales=["en"], translate=False)
+
+    class English:
+        provider, model = "fake", "fake-1"
+        systems = []
+
+        def complete(self, system, messages, schema):
+            self.systems.append(system)
+            return LLMResult(json.dumps({"skip": False, "title": "Moon plan", "facts": "a" * 160,
+                                         "interpretation": "b" * 60}))
+
+    llm = English()
+    result = run_cycle(engine, http=fake_http(), llm=llm, searcher=EnglishSearch())
+    # Japanese pages are not in the chosen language; English ones are summarized in English,
+    # with 60-120 characters scaled to 150-300.
+    assert (result["posted"], len(llm.systems)) == (2, 2)
+    assert "すべて英語で書きます" in llm.systems[0] and "合計を150〜300字" in llm.systems[0]

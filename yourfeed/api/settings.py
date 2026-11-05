@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from yourfeed import config
 from yourfeed.db import get_engine
 from yourfeed.llm import DEFAULT_MODELS
+from yourfeed.search.language import LOCALES
 
 router = APIRouter(prefix="/v1")
 
@@ -39,6 +40,12 @@ def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
 
+def _locales(values: list[str]) -> list[str]:
+    """Chosen locales in order; "all" stands alone."""
+    values = list(dict.fromkeys(values))
+    return ["all"] if "all" in values else values
+
+
 Site = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
                  AfterValidator(_site)]
 Term = Annotated[str, StringConstraints(max_length=60)]
@@ -56,6 +63,9 @@ class SettingsIn(BaseModel):
 class GenreIn(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
     latest: bool = True
+    locales: Annotated[list[Literal[LOCALES]], AfterValidator(_locales),
+                       Field(min_length=1, max_length=len(LOCALES))] = Field(default_factory=lambda: ["ja-JP"])
+    translate: bool = True
     sites: Annotated[list[Site], AfterValidator(_unique), Field(max_length=20)] = Field(default_factory=list)
     focus_terms: Terms = Field(default_factory=list)
     exclude_terms: Terms = Field(default_factory=list)
@@ -75,8 +85,8 @@ class WeightIn(BaseModel):
     weight: int = Field(ge=0, le=100)
 
 
-SEARCH_FIELDS = ("name", "latest", "sites", "focus_terms", "exclude_terms", "discovery_percent")
-STYLE_FIELDS = ("min_chars", "max_chars", "stance", "focus_terms")
+SEARCH_FIELDS = ("name", "latest", "locales", "sites", "focus_terms", "exclude_terms", "discovery_percent")
+STYLE_FIELDS = ("min_chars", "max_chars", "stance", "focus_terms", "translate")
 
 
 def _iso(value):
@@ -136,7 +146,7 @@ def _genre(connection: Connection, genre_id: UUID) -> dict:
     if row is None:
         raise HTTPException(404, "not found")
     return {"id": str(row["id"]), "name": row["name"], "weight": row["weight"], "latest": row["latest"],
-            "sites": row["sites"],
+            "locales": row["locales"], "translate": row["translate"], "sites": row["sites"],
             "focus_terms": row["focus_terms"], "exclude_terms": row["exclude_terms"],
             "discovery_percent": row["discovery_percent"], "min_chars": row["min_chars"],
             "max_chars": row["max_chars"], "stance": row["stance"]}
@@ -153,9 +163,9 @@ def create_genre(body: GenreIn, engine: Engine = Depends(get_engine)) -> dict:
     try:
         with engine.begin() as connection:
             genre_id = connection.execute(text("""
-                INSERT INTO genres (name, latest, sites, focus_terms, exclude_terms, discovery_percent,
+                INSERT INTO genres (name, latest, locales, translate, sites, focus_terms, exclude_terms, discovery_percent,
                                     min_chars, max_chars, stance, position)
-                VALUES (:name, :latest, :sites, :focus_terms, :exclude_terms, :discovery_percent,
+                VALUES (:name, :latest, :locales, :translate, :sites, :focus_terms, :exclude_terms, :discovery_percent,
                         :min_chars, :max_chars, :stance, (SELECT COALESCE(max(position) + 1, 0) FROM genres))
                 RETURNING id
             """), body.model_dump()).scalar_one()
@@ -170,7 +180,8 @@ def update_genre(genre_id: UUID, body: GenreIn, engine: Engine = Depends(get_eng
         with engine.begin() as connection:
             before = _genre(connection, genre_id)
             connection.execute(text("""
-                UPDATE genres SET name = :name, latest = :latest, sites = :sites, focus_terms = :focus_terms,
+                UPDATE genres SET name = :name, latest = :latest, locales = :locales, translate = :translate,
+                  sites = :sites, focus_terms = :focus_terms,
                   exclude_terms = :exclude_terms, discovery_percent = :discovery_percent,
                   min_chars = :min_chars, max_chars = :max_chars, stance = :stance, updated_at = now()
                 WHERE id = :id

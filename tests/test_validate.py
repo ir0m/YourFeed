@@ -65,5 +65,7 @@ def test_prompt_states_ranges_and_focus_terms():
     assert "interpretation: 常に空文字" in system_prompt(Style(100, 160, 0))
     assert "主題が「宇宙」と関係ない" in system_prompt(Style(topic="宇宙"))
     assert "その時だけの話題" in system_prompt(Style(latest=False))
+    english = system_prompt(Style(250, 400, 1, language="en", title_max=150))
+    assert "すべて英語で書きます" in english and "150字以内" in english and "すべて日本語で書きます" in system_prompt(Style())
     assert "その時だけの話題" not in system_prompt(Style())
     assert "関係ない" not in system_prompt(Style())

@@ -71,6 +71,9 @@ p { margin: 0; }
 .field-note { margin: -4px 0 10px calc(7.5rem + 12px); padding: 0; list-style: none; font-size: 14px;
   overflow-wrap: anywhere; }
 
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0 16px; }
+.checks label { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 15px; cursor: pointer; }
+.checks input { width: 18px; height: 18px; margin: 0; accent-color: #111; }
 .segments { display: inline-flex; flex-wrap: wrap; justify-self: start; border: 1px solid #111; }
 .segments label { padding: 6px 12px; border-left: 1px solid #111; cursor: pointer; font-size: 15px; }
 .segments label:first-child { border-left: 0; }

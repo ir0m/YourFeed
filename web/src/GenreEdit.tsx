@@ -5,10 +5,16 @@ import { Link, navigate } from './router'
 
 const STANCES = ['事実のみ', '事実中心', '半々', '解釈多め']
 const FRESHNESS: [string, boolean][] = [['最新', true], ['問わない', false]]
+const TRANSLATE: [string, boolean][] = [['する', true], ['しない', false]]
+const LOCALES: [string, string][] = [['ja-JP', '日本・日本語'], ['en-US', 'アメリカ・英語'], ['en-GB', 'イギリス・英語'],
+  ['en', '英語（国と地域は問わない）'], ['zh-CN', '中国・中国語'], ['zh-TW', '台湾・中国語'], ['ko-KR', '韓国・韓国語'],
+  ['fr-FR', 'フランス・フランス語'], ['de-DE', 'ドイツ・ドイツ語'], ['all', '指定しない']]
 
 interface Form {
   name: string
   latest: boolean
+  locales: string[]
+  translate: boolean
   sites: string
   focus_terms: string
   discovery_percent: string
@@ -19,15 +25,23 @@ interface Form {
 }
 
 const EMPTY: Form = {
-  name: '', latest: true, sites: '', focus_terms: '', discovery_percent: '20', exclude_terms: '',
+  name: '', latest: true, locales: ['ja-JP'], translate: true, sites: '', focus_terms: '', discovery_percent: '20', exclude_terms: '',
   min_chars: '100', max_chars: '160', stance: 1,
 }
 
 const toForm = (genre: Genre): Form => ({
-  name: genre.name, latest: genre.latest, sites: genre.sites.join('\n'), focus_terms: genre.focus_terms.join('\n'),
+  name: genre.name, latest: genre.latest, locales: genre.locales, translate: genre.translate, sites: genre.sites.join('\n'), focus_terms: genre.focus_terms.join('\n'),
   discovery_percent: String(genre.discovery_percent), exclude_terms: genre.exclude_terms.join('\n'),
   min_chars: String(genre.min_chars), max_chars: String(genre.max_chars), stance: genre.stance,
 })
+
+/** "指定しない" stands alone, and at least one stays chosen. */
+function toggleLocale(current: string[], value: string): string[] {
+  if (current.includes(value)) return current.length > 1 ? current.filter((locale) => locale !== value) : current
+  if (value === 'all') return ['all']
+  const chosen = new Set([...current.filter((locale) => locale !== 'all'), value])
+  return LOCALES.map(([locale]) => locale).filter((locale) => chosen.has(locale))
+}
 
 const lines = (value: string) => value.split('\n').map((line) => line.trim()).filter(Boolean)
 
@@ -79,7 +93,7 @@ export default function GenreEdit({ id }: { id: string }) {
       return
     }
     const values = {
-      name: form.name.trim(), latest: form.latest, sites, focus_terms: lines(form.focus_terms),
+      name: form.name.trim(), latest: form.latest, locales: form.locales, translate: form.translate, sites, focus_terms: lines(form.focus_terms),
       discovery_percent: Number(form.discovery_percent), exclude_terms: lines(form.exclude_terms),
       min_chars: minChars, max_chars: maxChars, stance: form.stance,
     }
@@ -120,6 +134,25 @@ export default function GenreEdit({ id }: { id: string }) {
             {FRESHNESS.map(([label, value]) => <label key={label} className={form.latest === value ? 'selected' : ''}>
               <input type="radio" name="latest" checked={form.latest === value}
                 onChange={() => setForm({ ...form, latest: value })} />
+              {label}
+            </label>)}
+          </span>
+        </div>
+        <div className="field field-top" role="group" aria-labelledby="locales-label">
+          <span id="locales-label">国と地域・言語</span>
+          <span className="checks">
+            {LOCALES.map(([value, label]) => <label key={value}>
+              <input type="checkbox" checked={form.locales.includes(value)}
+                onChange={() => setForm({ ...form, locales: toggleLocale(form.locales, value) })} />
+              {label}
+            </label>)}
+          </span>
+        </div>
+        <div className="field" role="radiogroup" aria-labelledby="translate-label"><span id="translate-label">翻訳</span>
+          <span className="segments">
+            {TRANSLATE.map(([label, value]) => <label key={label} className={form.translate === value ? 'selected' : ''}>
+              <input type="radio" name="translate" checked={form.translate === value}
+                onChange={() => setForm({ ...form, translate: value })} />
               {label}
             </label>)}
           </span>

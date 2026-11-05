@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from .language import in_language, language_of
+
 # (SearXNG categories, time range) in the order tried. None means no time limit.
 Window = tuple[str, str | None]
 LATEST_WINDOWS: tuple[Window, ...] = (
@@ -43,6 +45,7 @@ class Stream:
     query: str
     site: Site | None = None
     discovery: bool = False
+    locale: str = "all"
     page: int = 1
     done: bool = False
     seen: set[str] = field(default_factory=set)
@@ -65,13 +68,16 @@ def rotate(values: list, offset: int) -> list:
 
 
 class GenreSearch:
-    """Search state for one genre during one update. Genres of any age search this update's topics."""
+    """Search state for one genre during one update. Each chosen locale gets an even share of the
+    results; genres of any age search this update's topics."""
 
     def __init__(self, genre: dict, offset: int = 0) -> None:
         latest = genre.get("latest", True)
         exclude = list(genre.get("exclude_terms") or [])
         self.windows = LATEST_WINDOWS if latest else ANY_AGE_WINDOWS
+        self.locales = list(genre.get("locales") or ["all"])
         self.sites = [Site.parse(url) for url in genre.get("sites") or []]
+        self.query_locales: dict[str, list[str]] = {}
         if latest:
             self.focus, self.discovery = queries(genre["name"], list(genre.get("focus_terms") or []), exclude)
         else:
@@ -79,25 +85,41 @@ class GenreSearch:
             self.focus = []
             self.discovery = [queries(topic, [], exclude)[1][0] for topic in topics] or queries(
                 genre["name"], [], exclude)[1]
+            for query, topic in zip(self.discovery, topics):
+                # A topic is searched in the locales of its own language, or in all of them.
+                self.query_locales[query] = [locale for locale in self.locales
+                                             if in_language(language_of(locale), topic)] or self.locales
         self.share = (genre.get("discovery_percent", 20) / 100) if self.focus else 1.0
         self.offset = offset
         self.open_taken = 0
         self.discovery_taken = 0
-        self._streams: dict[Window, tuple[list[Stream], list[Stream], list[Stream]]] = {}
+        self.locale_taken = {locale: 0 for locale in self.locales}
+        self._streams: dict[tuple[Window, str], tuple[list[Stream], list[Stream], list[Stream]]] = {}
 
-    def streams(self, window: Window) -> tuple[list[Stream], list[Stream], list[Stream]]:
-        if window not in self._streams:
-            bases = self.focus or self.discovery
-            site = [Stream(f"{base} {s.operator}", site=s) for s in self.sites for base in bases]
-            focus = [Stream(query) for query in self.focus]
-            discovery = [Stream(query, discovery=True) for query in self.discovery]
-            self._streams[window] = (rotate(site, self.offset), rotate(focus, self.offset), discovery)
-        return self._streams[window]
+    def streams(self, window: Window, locale: str | None = None) -> tuple[list[Stream], list[Stream], list[Stream]]:
+        locale = locale or self.locales[0]
+        if (window, locale) not in self._streams:
+            discovery = [query for query in self.discovery if locale in self.query_locales.get(query, self.locales)]
+            bases = self.focus or discovery
+            site = [Stream(f"{base} {s.operator}", site=s, locale=locale) for s in self.sites for base in bases]
+            focus = [Stream(query, locale=locale) for query in self.focus]
+            self._streams[(window, locale)] = (
+                rotate(site, self.offset), rotate(focus, self.offset),
+                [Stream(query, discovery=True, locale=locale) for query in discovery])
+        return self._streams[(window, locale)]
 
     def next_stream(self, window: Window, need: int) -> tuple[Stream, int] | None:
         """The stream to read next and how many new results to take from it."""
+        open_locales = [locale for locale in self.locales
+                        if any(not stream.done for group in self.streams(window, locale) for stream in group)]
+        if not open_locales:
+            return None
+        locale = min(open_locales, key=lambda locale: self.locale_taken[locale])
+        return self._next_in(window, locale, -(-need // len(open_locales)))
+
+    def _next_in(self, window: Window, locale: str, need: int) -> tuple[Stream, int] | None:
         site, focus, discovery = (
-            [stream for stream in group if not stream.done] for group in self.streams(window))
+            [stream for stream in group if not stream.done] for group in self.streams(window, locale))
         first = lambda streams: min(streams, key=lambda stream: stream.page)  # noqa: E731
         if site:
             return first(site), need
@@ -114,6 +136,7 @@ class GenreSearch:
         return first(focus), focus_limit
 
     def taken(self, stream: Stream, count: int) -> None:
+        self.locale_taken[stream.locale] = self.locale_taken.get(stream.locale, 0) + count
         if stream.site is None:
             self.open_taken += count
             if stream.discovery:

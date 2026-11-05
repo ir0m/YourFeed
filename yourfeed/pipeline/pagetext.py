@@ -36,6 +36,7 @@ class Page:
     site_name: str | None = None
     published_at: datetime | None = None
     is_pdf: bool = False
+    language: str | None = None  # the page's own <html lang>
 
 
 def decode_html(body: bytes, content_type: str | None) -> str:
@@ -71,8 +72,9 @@ def html_page(html: str, url: str) -> Page | None:
         favor_precision=True, date_extraction_params={"extensive_search": False, "original_date": True})
     if document is None or not document.text:
         return None
+    declared = re.search(r"<html\b[^>]*?\blang=[\"']?([A-Za-z]{2,3}(?:-[A-Za-z0-9]+)?)", html[:5000], re.IGNORECASE)
     return Page(document.text[:TEXT_LIMIT], _clip(document.title), _clip(document.sitename, 100),
-                _local_date(document.date))
+                _local_date(document.date), language=declared.group(1) if declared else None)
 
 
 def pdf_page(body: bytes) -> Page | None:

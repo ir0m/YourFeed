@@ -14,12 +14,13 @@ from sqlalchemy.engine import Connection, Engine
 from yourfeed import config
 from yourfeed.db import WORKER_LOCK
 from yourfeed.llm import LLMClient, LLMError, make_client
+from yourfeed.search.language import LENGTH_SCALE, languages_of, page_language
 from yourfeed.search.searxng import Searxng
 from yourfeed.fetch import SafeHttpClient
 
 from .collect import CANDIDATES, Collector, Searcher
 from .pagetext import RETRYABLE, Page, PageFetcher
-from .prompt import Style
+from .prompt import TITLE_MAX, Style
 from .select import by_site, fill_by_weight
 from .summarize import summarize
 from .topics import PER_UPDATE, make_topics
@@ -90,6 +91,10 @@ class _Posting:
                 self._mark_attempted(row["id"], reason or "too_little_text")
                 return "no"
             self.pages[row["id"]] = page
+        language = page_language(languages_of(genre["locales"]), f"{page.title or ''}\n{page.text}", page.language)
+        if language is None:
+            self._mark_attempted(row["id"], "other_language")
+            return "no"
         # A page's own date is more exact than the search result's, except a PDF's file date.
         page_date = None if page.is_pdf and row["published_at"] else page.published_at
         published_at = page_date or row["published_at"]
@@ -101,8 +106,11 @@ class _Posting:
                 return "later"
         if since and published_at is None:
             return "later"  # undated pages wait for the widest window
-        style = Style(genre["min_chars"], genre["max_chars"], genre["stance"], tuple(genre["focus_terms"]),
-                      genre["name"], genre["latest"])
+        # Untranslated summaries are written in the page's language, with lengths scaled to it.
+        written = None if genre["translate"] or language == "ja" else language
+        scale = LENGTH_SCALE.get(written or "", 1.0)
+        style = Style(round(genre["min_chars"] * scale), round(genre["max_chars"] * scale), genre["stance"],
+                      tuple(genre["focus_terms"]), genre["name"], genre["latest"], written, round(TITLE_MAX * scale))
         title = page.title or row["title"]
         site_name = page.site_name or (urlsplit(row["url"]).hostname or "").removeprefix("www.")
         try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from yourfeed.llm import LLMClient, LLMResult
+from yourfeed.search.language import NAMES, languages_of
 
 from .select import matches
 from .validate import parse_json
@@ -34,6 +35,12 @@ def prompts(genre: dict[str, Any], used: list[str]) -> tuple[str, str]:
         "- 互いに別の小テーマにし、基本的な話題から専門的な話題まで混ぜる。",
         "- 時事の話題、人の近況、商品名は使わない。",
     ]
+    names = [NAMES[language] for language in languages_of(list(genre.get("locales") or ["all"])) or []
+             if language in NAMES]
+    if len(names) == 1:
+        lines.append(f"- {names[0]}で書く。")
+    elif names:
+        lines.append(f"- 各検索語は{'、'.join(names)}のどれかで書き、言語ごとにほぼ同じ数にする。")
     if focus:
         lines.append(f"- 約{100 - genre.get('discovery_percent', 20)}%は次の語に関係させ、"
                      f"残りはジャンル全体から選ぶ: {'、'.join(focus)}")

@@ -7,7 +7,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from .prompt import STANCE_SHARES, TITLE_MAX, Style
+from .prompt import STANCE_SHARES, Style
 
 KEYS = {"skip", "title", "facts", "interpretation"}
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -62,8 +62,8 @@ def check(output: object, source_text: str, style: Style) -> Checked:
         return Checked(None, True, ())
     title, facts, interpretation = (output[key].strip() for key in ("title", "facts", "interpretation"))
     problems: list[str] = []
-    if not 1 <= len(title) <= TITLE_MAX:
-        problems.append(f"title を1〜{TITLE_MAX}字にしてください（今は{len(title)}字）。")
+    if not 1 <= len(title) <= style.title_max:
+        problems.append(f"title を1〜{style.title_max}字にしてください（今は{len(title)}字）。")
     if not facts:
         problems.append("facts を書いてください。")
     if any(MARKUP.search(value) for value in (title, facts, interpretation)):

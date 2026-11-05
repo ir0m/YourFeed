@@ -21,7 +21,7 @@ class Searcher(Protocol):
     """What the collector needs from a search backend."""
 
     def search(self, query: str, *, page: int = 1, categories: str = "general",
-               time_range: str | None = None) -> list[Result]: ...
+               time_range: str | None = None, language: str = "all") -> list[Result]: ...
 
 
 class Collector:
@@ -69,7 +69,7 @@ class Collector:
         try:
             categories, time_range = window
             results = self.searcher.search(stream.query, page=stream.page, categories=categories,
-                                           time_range=time_range)
+                                           time_range=time_range, language=stream.locale)
         except SearchError as exc:
             self.error = exc.code
             self.errors += 1

@@ -50,7 +50,8 @@ def test_html_pages_give_the_article_text_and_metadata():
     assert page.text.startswith("月面着陸の計画\n機構は2027年")
     assert "ホーム" not in page.text and "著作権" not in page.text
     assert page.title == "月面着陸の計画" and page.site_name == "宇宙ニュース"
-    assert page.published_at.date().isoformat() == "2026-11-03"
+    assert page.published_at.date().isoformat() == "2026-11-03" and page.language is None
+    assert html_page(ARTICLE.replace("<html>", "<html class='a' lang=\"ja\">"), "https://space.example/a").language == "ja"
 
 
 def test_reader_follows_robots_and_reads_html_and_pdf():

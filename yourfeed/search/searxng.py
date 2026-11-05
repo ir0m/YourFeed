@@ -99,8 +99,8 @@ class Searxng:
         self.client.close()
 
     def search(self, query: str, *, page: int = 1, categories: str = "general",
-               time_range: str | None = None) -> list[Result]:
-        params = {"q": query, "format": "json", "categories": categories, "pageno": page}
+               time_range: str | None = None, language: str = "all") -> list[Result]:
+        params = {"q": query, "format": "json", "categories": categories, "pageno": page, "language": language}
         if time_range:
             params["time_range"] = time_range
         with self._lock:

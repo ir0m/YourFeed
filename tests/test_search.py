@@ -43,9 +43,10 @@ def test_searxng_sends_json_queries_and_maps_errors():
         return httpx.Response(200, json={"results": [entry("https://a.example/1")]})
 
     searxng = Searxng("http://searxng:8080/", httpx.Client(transport=httpx.MockTransport(handler)), min_interval=0)
-    assert [result.url for result in searxng.search("量子", page=2, categories="news", time_range="week")] == [
-        "https://a.example/1"]
-    assert seen[0] == {"q": "量子", "format": "json", "categories": "news", "pageno": "2", "time_range": "week"}
+    assert [result.url for result in searxng.search("量子", page=2, categories="news", time_range="week",
+                                                    language="ja-JP")] == ["https://a.example/1"]
+    assert seen[0] == {"q": "量子", "format": "json", "categories": "news", "pageno": "2", "time_range": "week",
+                       "language": "ja-JP"}
     with pytest.raises(SearchError) as error:
         searxng.search("blocked")
     assert (error.value.code, error.value.fatal) == ("search_format", True)
@@ -116,3 +117,25 @@ def test_genres_of_any_age_search_their_topics_without_a_time_limit():
     assert (stream.query, stream.discovery, limit) == ("ストア派 倫理 -広告", True, 10)
     without_topics = GenreSearch({**genre, "sites": [], "search_topics": []})
     assert without_topics.next_stream(("general", None), 5)[0].query == "思想 -広告"
+
+
+def test_each_locale_gets_an_even_share():
+    plan = GenreSearch({"name": "AI", "locales": ["ja-JP", "en-US"], "sites": [], "focus_terms": [],
+                        "exclude_terms": [], "discovery_percent": 20})
+    window = ("news", "day")
+    stream, limit = plan.next_stream(window, 10)
+    assert (stream.query, stream.locale, limit) == ("AI", "ja-JP", 5)
+    plan.taken(stream, 5)
+    stream, limit = plan.next_stream(window, 5)
+    assert (stream.locale, limit) == ("en-US", 3)
+    plan.taken(stream, 3)
+    assert plan.next_stream(window, 2)[0].locale == "en-US"
+
+
+def test_topics_are_searched_in_their_own_language():
+    plan = GenreSearch({"name": "哲学", "latest": False, "locales": ["ja-JP", "en"], "sites": [],
+                        "focus_terms": [], "exclude_terms": [], "discovery_percent": 20,
+                        "search_topics": ["ストア派の倫理", "stoic ethics"]})
+    window = plan.windows[0]
+    assert [stream.query for stream in plan.streams(window, "ja-JP")[2]] == ["ストア派の倫理"]
+    assert [stream.query for stream in plan.streams(window, "en")[2]] == ["stoic ethics"]

@@ -10,7 +10,9 @@ def test_topic_prompt_follows_the_genre_settings():
     assert "約70%は次の語に関係させ" in system and "禅" in system and "次の語を含めない: 広告" in system
     assert user == "ジャンル: 思想\n前に使った検索語（これとは別のものにする）: ストア派"
     system, user = prompts({"name": "思想"}, [])
-    assert "約" not in system and user == "ジャンル: 思想"
+    assert "約" not in system and "で書く" not in system and user == "ジャンル: 思想"
+    assert "- 英語で書く。" in prompts({"name": "philosophy", "locales": ["en-US", "en-GB"]}, [])[0]
+    assert "日本語、英語のどれかで書き" in prompts({"name": "哲学", "locales": ["ja-JP", "en"]}, [])[0]
 
 
 def test_topics_are_cleaned():

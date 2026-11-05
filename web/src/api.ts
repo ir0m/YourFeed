@@ -64,6 +64,8 @@ export interface Settings extends SettingsValues {
 export interface GenreValues {
   name: string
   latest: boolean
+  locales: string[]
+  translate: boolean
   sites: string[]
   focus_terms: string[]
   exclude_terms: string[]
