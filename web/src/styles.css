@@ -28,6 +28,8 @@ p { margin: 0; }
 .card-open:hover, .card-open:focus-visible { background: #f5f5f5; }
 .card-title { font-size: 20px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
 .card-body { line-height: 1.75; overflow-wrap: anywhere; }
+.post-author { font-weight: 700; overflow-wrap: anywhere; }
+.post-text { white-space: pre-line; }
 .end { min-height: 24px; }
 .notice { display: flex; align-items: center; justify-content: space-between; gap: 16px;
   margin-top: 16px; padding: 12px 16px; border: 1px solid #111; }

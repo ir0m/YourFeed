@@ -1,4 +1,4 @@
-"""Settings and genres."""
+"""Settings, genres and personas."""
 
 from __future__ import annotations
 
@@ -112,6 +112,21 @@ class GenreIn(BaseModel):
         return self
 
 
+class PersonaIn(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+    profile: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
+    topics: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
+    tone: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
+    min_chars: int = Field(default=40, ge=10, le=500)
+    max_chars: int = Field(default=140, ge=10, le=500)
+
+    @model_validator(mode="after")
+    def _ranges(self) -> PersonaIn:
+        if self.max_chars < self.min_chars + 10:
+            raise ValueError("max_chars must be at least min_chars + 10")
+        return self
+
+
 class WeightIn(BaseModel):
     weight: int = Field(ge=0, le=100)
 
@@ -130,6 +145,12 @@ def _genre_rows(connection: Connection) -> list[dict]:
             .mappings()]
 
 
+def _persona_rows(connection: Connection) -> list[dict]:
+    return [{"id": str(row["id"]), "name": row["name"], "weight": row["weight"]}
+            for row in connection.execute(text("SELECT id, name, weight FROM personas ORDER BY position, created_at"))
+            .mappings()]
+
+
 @router.get("/settings")
 def get_settings(engine: Engine = Depends(get_engine)) -> dict:
     with engine.connect() as connection:
@@ -140,6 +161,7 @@ def get_settings(engine: Engine = Depends(get_engine)) -> dict:
             FROM runs ORDER BY started_at DESC LIMIT 1
         """)).mappings().one_or_none()
         genres = _genre_rows(connection)
+        personas = _persona_rows(connection)
     return {
         "interval_minutes": row["interval_minutes"], "items_per_run": row["items_per_run"],
         "retention_hours": row["retention_hours"], "llm_provider": row["llm_provider"],
@@ -151,6 +173,7 @@ def get_settings(engine: Engine = Depends(get_engine)) -> dict:
         "last_run": ({**run, "started_at": _iso(run["started_at"]), "finished_at": _iso(run["finished_at"])}
                      if run else None),
         "genres": genres,
+        "personas": personas,
     }
 
 
@@ -253,4 +276,66 @@ def set_weight(genre_id: UUID, body: WeightIn, engine: Engine = Depends(get_engi
 def delete_genre(genre_id: UUID, engine: Engine = Depends(get_engine)) -> Response:
     with engine.begin() as connection:
         connection.execute(text("DELETE FROM genres WHERE id = :id"), {"id": genre_id})
+    return Response(status_code=204)
+
+
+def _persona(connection: Connection, persona_id: UUID) -> dict:
+    row = connection.execute(text("SELECT * FROM personas WHERE id = :id"),
+                             {"id": persona_id}).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(404, "not found")
+    return {"id": str(row["id"]), "name": row["name"], "weight": row["weight"], "profile": row["profile"],
+            "topics": row["topics"], "tone": row["tone"], "min_chars": row["min_chars"],
+            "max_chars": row["max_chars"]}
+
+
+@router.get("/personas/{persona_id}")
+def get_persona(persona_id: UUID, engine: Engine = Depends(get_engine)) -> dict:
+    with engine.connect() as connection:
+        return _persona(connection, persona_id)
+
+
+@router.post("/personas", status_code=201)
+def create_persona(body: PersonaIn, engine: Engine = Depends(get_engine)) -> dict:
+    try:
+        with engine.begin() as connection:
+            persona_id = connection.execute(text("""
+                INSERT INTO personas (name, profile, topics, tone, min_chars, max_chars, position)
+                VALUES (:name, :profile, :topics, :tone, :min_chars, :max_chars,
+                        (SELECT COALESCE(max(position) + 1, 0) FROM personas))
+                RETURNING id
+            """), body.model_dump()).scalar_one()
+            return _persona(connection, persona_id)
+    except IntegrityError as exc:
+        raise HTTPException(409, "name already used") from exc
+
+
+@router.put("/personas/{persona_id}")
+def update_persona(persona_id: UUID, body: PersonaIn, engine: Engine = Depends(get_engine)) -> dict:
+    try:
+        with engine.begin() as connection:
+            if not connection.execute(text("""
+                UPDATE personas SET name = :name, profile = :profile, topics = :topics, tone = :tone,
+                  min_chars = :min_chars, max_chars = :max_chars, updated_at = now()
+                WHERE id = :id
+            """), {**body.model_dump(), "id": persona_id}).rowcount:
+                raise HTTPException(404, "not found")
+            return _persona(connection, persona_id)
+    except IntegrityError as exc:
+        raise HTTPException(409, "name already used") from exc
+
+
+@router.patch("/personas/{persona_id}")
+def set_persona_weight(persona_id: UUID, body: WeightIn, engine: Engine = Depends(get_engine)) -> dict:
+    with engine.begin() as connection:
+        if not connection.execute(text("UPDATE personas SET weight = :weight, updated_at = now() WHERE id = :id"),
+                                  {"id": persona_id, "weight": body.weight}).rowcount:
+            raise HTTPException(404, "not found")
+        return {"personas": _persona_rows(connection)}
+
+
+@router.delete("/personas/{persona_id}", status_code=204)
+def delete_persona(persona_id: UUID, engine: Engine = Depends(get_engine)) -> Response:
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM personas WHERE id = :id"), {"id": persona_id})
     return Response(status_code=204)

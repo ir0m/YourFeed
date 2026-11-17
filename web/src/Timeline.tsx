@@ -7,6 +7,7 @@ const UPDATING_MS = 5 * 1000
 const IDLE_MS = 60 * 1000
 
 const dateFormat = new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric' })
+const timeFormat = new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
 function DetailDialog({ id, onClose, onClosed }: { id: string | null; onClose: () => void; onClosed: () => void }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -37,7 +38,15 @@ function DetailDialog({ id, onClose, onClosed }: { id: string | null; onClose: (
     onCancel={(event) => { event.preventDefault(); onClose() }}>
     <button className="close" onClick={onClose} aria-label="閉じる">×</button>
     {state === 'missing' && <p>表示できません。</p>}
-    {state === 'ready' && detail && <>
+    {state === 'ready' && detail?.kind === 'post' && <>
+      <h2 id="detail-title">{detail.author}</h2>
+      <p className="detail-text post-text">{detail.body}</p>
+      <div className="detail-meta">
+        <p>{timeFormat.format(new Date(detail.added_at))}</p>
+        {detail.profile && <p className="post-text">{detail.profile}</p>}
+      </div>
+    </>}
+    {state === 'ready' && detail?.kind === 'article' && <>
       <h2 id="detail-title">{detail.title}</h2>
       <p className="detail-text">{detail.facts}</p>
       {detail.interpretation && <div className="detail-interpretation">
@@ -156,8 +165,10 @@ export default function Timeline({ path }: { path: string }) {
     <section className="cards">
       {cards.map((card) => <article className="card" key={card.id}>
         <button className="card-open" onClick={(event) => open(card.id, event.currentTarget)}>
-          <span className="card-title">{card.title}</span>
-          <span className="card-body">{card.body}</span>
+          {card.kind === 'post'
+            ? <span className="post-author">{card.author}</span>
+            : <span className="card-title">{card.title}</span>}
+          <span className={card.kind === 'post' ? 'card-body post-text' : 'card-body'}>{card.body}</span>
         </button>
       </article>)}
     </section>

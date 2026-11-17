@@ -21,6 +21,7 @@ from yourfeed.fetch import SafeHttpClient
 
 from .collect import CANDIDATES, Collector, Searcher
 from .pagetext import RETRYABLE, Page, PageFetcher
+from .persona import BATCH_MAX, RECENT, write_posts
 from .prompt import TITLE_MAX, Style
 from .select import allocate, by_site, fill_by_weight
 from .summarize import summarize
@@ -90,9 +91,13 @@ def make_clients(settings: dict[str, Any]) -> list[Backend]:
 
 class _Posting:
     def __init__(self, engine: Engine, http: SafeHttpClient, clients: list[Backend], now: datetime,
-                 run_id: int, call_cap: int, genres: dict[Any, dict[str, Any]], retention_hours: int) -> None:
+                 run_id: int, call_cap: int, genres: dict[Any, dict[str, Any]], retention_hours: int,
+                 personas: dict[Any, dict[str, Any]] | None = None, shares: dict[Any, int] | None = None) -> None:
         self.engine, self.now = engine, now
         self.run_id, self.call_cap, self.genres, self.retention_hours = run_id, call_cap, genres, retention_hours
+        self.personas = personas or {}
+        self.shares = shares or {}  # each persona's first share of the posts, to ask for that many at once
+        self.drafts: dict[Any, deque[str]] = {persona_id: deque() for persona_id in self.personas}
         self.posted = 0
         self.queues: dict[tuple[Any, int], deque[dict[str, Any]]] = {}
         self.fetcher = PageFetcher(http)
@@ -101,7 +106,7 @@ class _Posting:
         self.error: str | None = None
         self.tried: set[Any] = set()
         self.pages: dict[Any, Page] = {}
-        self.accepted: dict[Any, list[Any]] = {genre_id: [] for genre_id in genres}
+        self.accepted: dict[Any, list[Any]] = {key: [] for key in [*genres, *self.personas]}
         self.clients = clients
         self.llm: LLMClient | None = None
         self.switches: list[dict[str, str | None]] = []  # each provider given up on, why, and the next one
@@ -216,7 +221,9 @@ class _Posting:
 
     def fill(self, genre_id: Any, target: int, stage: int) -> bool:
         """Post items from the genre's `stage`-th window as they are summarized, until `target`;
-        False when nothing is left."""
+        False when nothing is left. A persona's posts are written instead."""
+        if genre_id in self.personas:
+            return self._fill_persona(genre_id, target, stage)
         genre = self.genres[genre_id]
         windows = LATEST_WINDOWS if genre["latest"] else ANY_AGE_WINDOWS
         if stage >= len(windows):
@@ -243,6 +250,36 @@ class _Posting:
                 accepted.append(row["id"])
                 self.posted += publish(self.engine, [(genre_id, row["id"])], self.retention_hours)
         return len(accepted) >= target
+
+    def _fill_persona(self, persona_id: Any, target: int, stage: int) -> bool:
+        """Post the persona's posts until `target`, writing more when the drafts run out. A persona has
+        one window; False when the model cannot write more in this update."""
+        if stage > 0:
+            return False
+        persona, drafts, accepted = self.personas[persona_id], self.drafts[persona_id], self.accepted[persona_id]
+        while len(accepted) < target:
+            if not drafts:
+                if self.llm is None or self.calls >= self.call_cap:
+                    return False
+                count = min(BATCH_MAX, max(target, self.shares.get(persona_id, 0)) - len(accepted))
+                with self.engine.connect() as connection:
+                    recent = list(connection.execute(text("""
+                        SELECT facts FROM timeline_entries WHERE persona_id = :id ORDER BY added_at DESC LIMIT :limit
+                    """), {"id": persona_id, "limit": RECENT}).scalars())
+                try:
+                    written = write_posts(self.llm, persona, count, recent, self.now.astimezone(config.timezone()))
+                except LLMError as exc:
+                    if self._failed(exc):
+                        continue  # the next provider tries
+                    return False
+                self.consecutive_errors = 0
+                self._count(written.calls, written.input_tokens, written.output_tokens)
+                if not written.posts:
+                    return False
+                drafts.extend(written.posts)
+            accepted.append(publish_post(self.engine, persona_id, drafts.popleft()))
+            self.posted += 1
+        return True
 
     def search_terms(self, genre: dict[str, Any]) -> dict[str, Any]:
         """The genre's name and terms in each chosen language; the model translates the missing ones."""
@@ -329,12 +366,20 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | list[LL
         genres = [dict(row) for row in connection.execute(text("""
             SELECT * FROM genres WHERE weight > 0 ORDER BY position, created_at
         """)).mappings()]
+        personas = [dict(row) for row in connection.execute(text("""
+            SELECT * FROM personas WHERE weight > 0 ORDER BY position, created_at
+        """)).mappings()]
         total = settings["items_per_run"]
-        candidates = candidates_for(total)
+        # Genres and personas share the posts by weight, genres first. Only the genres' share is searched for.
+        weights = {genre["id"]: genre["weight"] for genre in genres} | {
+            persona["id"]: persona["weight"] for persona in personas}
+        post_shares = allocate(weights, total)
+        genre_posts = sum(post_shares[genre["id"]] for genre in genres)
+        candidates = candidates_for(genre_posts) if genre_posts else 0
         run_id = connection.execute(text("""
             INSERT INTO runs (target, found_target) VALUES (:target, :found_target) RETURNING id
         """), {"target": total, "found_target": candidates}).scalar_one()
-    detail: dict[str, Any] = {"genres": {}}
+    detail: dict[str, Any] = {"genres": {}, "personas": {}}
     own_http, own_searcher = http is None, searcher is None
     http = http or SafeHttpClient()
     searcher = searcher or Searxng(config.searxng_url())
@@ -345,7 +390,8 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | list[LL
         given = [llm] if llm is not None and not isinstance(llm, list) else llm
         clients = [(client.provider, client) for client in given] if given is not None else make_clients(settings)
         posting = _Posting(engine, http, clients, now, run_id, total * CALLS_PER_POST,
-                           {genre["id"]: genre for genre in genres}, settings["retention_hours"])
+                           {genre["id"]: genre for genre in genres}, settings["retention_hours"],
+                           {persona["id"]: persona for persona in personas}, post_shares)
         shares = allocate({genre["id"]: genre["weight"] for genre in genres}, candidates)
         for genre in genres:
             genre["translations"] = posting.search_terms(genre)
@@ -356,13 +402,15 @@ def _cycle(engine: Engine, http: SafeHttpClient | None, llm: LLMClient | list[LL
             connection.execute(text("""
                 UPDATE runs SET found = :found, searches = :searches, search_error = :error WHERE id = :id
             """), {"id": run_id, "found": found, "searches": collector.searches, "error": collector.error})
-        targets = fill_by_weight({genre["id"]: genre["weight"] for genre in genres}, total,
-                                 range(len(LATEST_WINDOWS)),
+        targets = fill_by_weight(weights, total, range(len(LATEST_WINDOWS)),
                                  lambda genre_id: len(posting.accepted[genre_id]), posting.fill, step=1)
         for genre in genres:
             detail["genres"][str(genre["id"])] = {
                 "found": collector.found[genre["id"]], "found_target": found_targets[genre["id"]],
                 "posted": len(posting.accepted[genre["id"]]), "target": targets[genre["id"]]}
+        for persona in personas:
+            detail["personas"][str(persona["id"])] = {
+                "posted": len(posting.accepted[persona["id"]]), "target": targets[persona["id"]]}
         posted = posting.posted + publish(engine, [], settings["retention_hours"])
     except Exception as exc:
         _finish(engine, run_id, "error", posting.posted if posting else 0, posting, detail, (posting and posting.error) or type(exc).__name__)
@@ -408,6 +456,15 @@ def publish(engine: Engine, posts: list[tuple[Any, Any]], retention_hours: int) 
         connection.execute(text("DELETE FROM timeline_entries WHERE added_at < :cutoff"),
                            {"cutoff": now - timedelta(hours=retention_hours)})
     return posted
+
+
+def publish_post(engine: Engine, persona_id: Any, post: str) -> Any:
+    """Insert a persona's post as the newest; returns its id. Old posts go with the next `publish`."""
+    with engine.begin() as connection:
+        return connection.execute(text("""
+            INSERT INTO timeline_entries (persona_id, title, facts, added_at)
+            VALUES (:persona_id, '', :post, :added_at) RETURNING id
+        """), {"persona_id": persona_id, "post": post, "added_at": datetime.now(timezone.utc)}).scalar_one()
 
 
 def forget_old(engine: Engine, now: datetime) -> None:

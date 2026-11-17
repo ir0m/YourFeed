@@ -34,7 +34,7 @@ const ERRORS: Record<string, string> = {
 }
 const timeFormat = new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
-type Section = 'genres' | 'update' | 'ai'
+type Section = 'genres' | 'personas' | 'update' | 'ai'
 /** The update settings as typed, and the providers in the order they are tried. */
 type Form = { interval_minutes: string; items_per_run: string; retention_hours: string; backends: Backend[] }
 type TextKey = Exclude<keyof Form, 'backends'>
@@ -62,7 +62,7 @@ function switchText(switches: Switch[]): string {
   return `　${chain.join(' → ')} → ${last ? providerName(last) : 'AIなし'}`
 }
 
-/** Posts per update for each genre: largest remainder over genres that have a weight. */
+/** Posts per update for each genre and persona: largest remainder over those that have a weight. */
 function planned(genres: GenreRow[], weights: Record<string, string>, total: number): Record<string, number> {
   const active = genres.filter((genre) => Number(weights[genre.id]) > 0)
   const sum = active.reduce((acc, genre) => acc + Number(weights[genre.id]), 0)
@@ -121,11 +121,14 @@ export default function Settings() {
   const poll = useRef<number | null>(null)
 
   useEffect(() => {
-    api.settings().then((settings) => {
+    api.settings().then((loaded) => {
+      // A server from before personas has no list of them.
+      const settings = { ...loaded, personas: loaded.personas ?? [] }
       setData(settings)
       setForm(toForm(settings))
       saved.current = toForm(settings)
-      setWeights(Object.fromEntries(settings.genres.map((genre) => [genre.id, String(genre.weight)])))
+      setWeights(Object.fromEntries([...settings.genres, ...settings.personas]
+        .map((row) => [row.id, String(row.weight)])))
     }).catch(() => setFailed('load'))
     return () => { if (poll.current) window.clearInterval(poll.current) }
   }, [])
@@ -143,7 +146,7 @@ export default function Settings() {
     try {
       const result = await api.saveSettings(toValues(next))
       saved.current = toForm(result)
-      setData(result)
+      setData({ ...result, personas: result.personas ?? [] })
       setFailed(null)
       // The server drops a provider listed twice.
       if (section === 'ai') setForm((current) => current && { ...current, backends: toForm(result).backends })
@@ -179,19 +182,24 @@ export default function Settings() {
   }
   const removeBackend = (index: number) => setBackends(form.backends.filter((_, position) => position !== index), true)
 
-  async function saveWeight(genre: GenreRow) {
-    const value = Number(weights[genre.id])
+  async function saveWeight(row: GenreRow, section: 'genres' | 'personas') {
+    const value = Number(weights[row.id])
     if (!Number.isInteger(value) || value < 0 || value > 100) {
-      setFailed('genres')
+      setFailed(section)
       return
     }
-    if (value === genre.weight) return
+    if (value === row.weight) return
     try {
-      const result = await api.setWeight(genre.id, value)
-      setData((current) => current && { ...current, genres: result.genres })
+      if (section === 'genres') {
+        const result = await api.setWeight(row.id, value)
+        setData((current) => current && { ...current, genres: result.genres })
+      } else {
+        const result = await api.setPersonaWeight(row.id, value)
+        setData((current) => current && { ...current, personas: result.personas })
+      }
       setFailed(null)
     } catch {
-      setFailed('genres')
+      setFailed(section)
     }
   }
 
@@ -220,32 +228,36 @@ export default function Settings() {
   }
 
   const uses = (provider: Provider) => form.backends.some((backend) => backend.provider === provider)
-  const counts =planned(data.genres, weights, Number(form.items_per_run) || 0)
+  // Genres and personas share the posts of an update by weight.
+  const counts = planned([...data.genres, ...data.personas], weights, Number(form.items_per_run) || 0)
   const heading = (title: string, section: Section) => <div className="group-head">
     <h2>{title}</h2>
     {failed === section && <span className="message" role="alert">保存できません</span>}
   </div>
 
+  const weightList = (title: string, section: 'genres' | 'personas', rows: GenreRow[], add: string) => <section className="group">
+    {heading(title, section)}
+    {rows.length > 0 && <>
+      <div className="genre-columns" aria-hidden="true"><span /><span>比率</span><span>件数</span></div>
+      <ul className="genres">
+        {rows.map((row) => <li key={row.id} className={counts[row.id] ? '' : 'off'}>
+          <Link to={`/settings/${section}/${row.id}`} className="genre-name">{row.name}</Link>
+          <input type="number" min={0} max={100} required aria-label={`${row.name}の比率`}
+            value={weights[row.id] ?? ''} onKeyDown={blurOnEnter}
+            onChange={(event) => setWeights({ ...weights, [row.id]: event.target.value })}
+            onBlur={() => void saveWeight(row, section)} />
+          <span className="count">{counts[row.id]}件</span>
+        </li>)}
+      </ul>
+    </>}
+    <Link to={`/settings/${section}/new`} className="button">{add}</Link>
+  </section>
+
   return <main className="page settings">
     <nav className="top top-start"><Link to="/">戻る</Link></nav>
 
-    <section className="group">
-      {heading('ジャンル', 'genres')}
-      {data.genres.length > 0 && <>
-        <div className="genre-columns" aria-hidden="true"><span /><span>比率</span><span>件数</span></div>
-        <ul className="genres">
-          {data.genres.map((genre) => <li key={genre.id} className={counts[genre.id] ? '' : 'off'}>
-            <Link to={`/settings/genres/${genre.id}`} className="genre-name">{genre.name}</Link>
-            <input type="number" min={0} max={100} required aria-label={`${genre.name}の比率`}
-              value={weights[genre.id] ?? ''} onKeyDown={blurOnEnter}
-              onChange={(event) => setWeights({ ...weights, [genre.id]: event.target.value })}
-              onBlur={() => void saveWeight(genre)} />
-            <span className="count">{counts[genre.id]}件</span>
-          </li>)}
-        </ul>
-      </>}
-      <Link to="/settings/genres/new" className="button">ジャンルを追加</Link>
-    </section>
+    {weightList('ジャンル', 'genres', data.genres, 'ジャンルを追加')}
+    {weightList('人物', 'personas', data.personas, '人物を追加')}
 
     <form className="group" data-section="update" onSubmit={(event) => event.preventDefault()}>
       {heading('更新', 'update')}

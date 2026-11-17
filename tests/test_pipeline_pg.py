@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -561,3 +562,93 @@ def test_a_provider_that_cannot_be_used_hands_over_to_the_next(client, engine, m
     assert result["posted"] == 0
     assert client.get("/v1/settings").json()["last_run"]["switches"] == [
         {"from": "claude_cli", "error": "http_429", "to": None}]
+
+
+class Writer(FakeLLM):
+    """Writes persona posts, numbered so each one differs, and remembers what it was shown."""
+
+    def __init__(self):
+        super().__init__()
+        self.post_calls = 0
+        self.shown = []
+        self.systems = []
+
+    def complete(self, system, messages, schema):
+        if "posts" not in schema["properties"]:
+            return super().complete(system, messages, schema)
+        self.post_calls += 1
+        self.shown.append(messages[0]["content"])
+        self.systems.append(system)
+        asked = int(re.search(r"投稿を(\d+)件", system).group(1))
+        start = self.post_calls * 100
+        posts = [f"今日は散歩をして、川沿いの紅葉を眺めていた。{start + n}" for n in range(asked)]
+        return LLMResult(json.dumps({"posts": ["短い", "https://x.example を見た。とても良かった。", *posts]},
+                                    ensure_ascii=False), 30, 40)
+
+
+def create_persona(client, name, weight, **extra):
+    created = client.post("/v1/personas", json={"name": name, "min_chars": 10, "max_chars": 60, **extra},
+                          headers=SAME_ORIGIN)
+    assert created.status_code == 201
+    assert client.patch(f"/v1/personas/{created.json()['id']}", json={"weight": weight},
+                        headers=SAME_ORIGIN).status_code == 200
+    return created.json()
+
+
+def test_persona_api_validates(client):
+    persona = client.post("/v1/personas", json={"name": " 山田 ", "profile": "東京の会社員"}, headers=SAME_ORIGIN)
+    assert persona.status_code == 201
+    body = persona.json()
+    assert (body["name"], body["profile"], body["weight"], body["min_chars"], body["max_chars"]) == \
+        ("山田", "東京の会社員", 10, 40, 140)
+    assert client.post("/v1/personas", json={"name": "山田"}, headers=SAME_ORIGIN).status_code == 409
+    assert client.post("/v1/personas", json={"name": "x", "min_chars": 50, "max_chars": 55},
+                       headers=SAME_ORIGIN).status_code == 422
+    assert client.post("/v1/personas", json={"name": "x", "profile": "あ" * 1001},
+                       headers=SAME_ORIGIN).status_code == 422
+    assert client.post("/v1/personas", json={"name": "宇宙"}, headers=SAME_ORIGIN).status_code == 201
+    saved = client.put(f"/v1/personas/{body['id']}", json={"name": "山田", "topics": "料理", "tone": "丁寧語"},
+                       headers=SAME_ORIGIN).json()
+    assert (saved["topics"], saved["tone"], saved["profile"]) == ("料理", "丁寧語", "")
+    rows = client.patch(f"/v1/personas/{body['id']}", json={"weight": 3}, headers=SAME_ORIGIN).json()["personas"]
+    assert rows[0] == {"id": body["id"], "name": "山田", "weight": 3}
+    assert [row["name"] for row in client.get("/v1/settings").json()["personas"]] == ["山田", "宇宙"]
+    assert client.delete(f"/v1/personas/{body['id']}", headers=SAME_ORIGIN).status_code == 204
+    assert client.get(f"/v1/personas/{body['id']}").status_code == 404
+    assert client.put(f"/v1/personas/{body['id']}", json={"name": "山田"}, headers=SAME_ORIGIN).status_code == 404
+
+
+def test_personas_share_the_posts_and_write_without_searching(client, engine, monkeypatch):
+    monkeypatch.setattr(run_module, "CANDIDATES", 4)
+    client.put("/v1/settings", json=settings_body(client, items_per_run=4), headers=SAME_ORIGIN)
+    create(client, "宇宙", 1)
+    persona = create_persona(client, "山田", 1, profile="東京の会社員", topics="散歩と料理", tone="です・ます調")
+    create_persona(client, "休み", 0)
+    llm = Writer()
+    result = run_cycle(engine, http=fake_http(), llm=llm, searcher=MixedSearch())
+    # Half the posts are the genre's summaries, half the persona's; its two posts come from one call.
+    assert (result["posted"], result["target"]) == (4, 4)
+    assert result["personas"] == {persona["id"]: {"posted": 2, "target": 2}}
+    assert llm.post_calls == 1 and "東京の会社員" in llm.systems[0] and "です・ます調" in llm.systems[0]
+    assert llm.shown == ["投稿を書いてください。"]
+    items = client.get("/v1/timeline").json()["items"]
+    posts = [item for item in items if item["kind"] == "post"]
+    assert len(posts) == 2 and {post["author"] for post in posts} == {"山田"}
+    assert all(post["body"].startswith("今日は散歩") and post["title"] == "" for post in posts)
+    assert sum(item["kind"] == "article" for item in items) == 2
+    detail = client.get(f"/v1/timeline/{posts[0]['id']}").json()
+    assert (detail["kind"], detail["author"], detail["profile"], detail["body"]) == \
+        ("post", "山田", "東京の会社員", posts[0]["body"])
+
+    # With only personas, nothing is searched; earlier posts are shown so they are not repeated.
+    client.patch(f"/v1/genres/{client.get('/v1/settings').json()['genres'][0]['id']}", json={"weight": 0},
+                 headers=SAME_ORIGIN)
+    search = FakeSearch()
+    again = run_cycle(engine, http=fake_http(), llm=llm, searcher=search)
+    assert (again["posted"], again["found"], search.queries) == (4, 0, [])
+    assert client.get("/v1/settings").json()["last_run"]["found_target"] == 0
+    assert all(post["body"] in llm.shown[1] for post in posts)
+
+    # Deleting the persona removes its posts.
+    client.delete(f"/v1/personas/{persona['id']}", headers=SAME_ORIGIN)
+    assert [item["kind"] for item in client.get("/v1/timeline").json()["items"]] == ["article", "article"]

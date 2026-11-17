@@ -18,7 +18,7 @@ from .config import allowed_hosts, extra_hosts
 from .db import get_engine
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
-EXPECTED_REVISION = "0004_translations"
+EXPECTED_REVISION = "0007_personas"
 MAX_BODY_BYTES = 1_000_000
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
        "font-src 'self'; connect-src 'self'; manifest-src 'self'; object-src 'none'; "
@@ -83,7 +83,8 @@ if WEB_DIST.is_dir():
     def _index() -> FileResponse:
         return FileResponse(WEB_DIST / "index.html", headers={"Cache-Control": "no-store"})
 
-    for page in ("/", "/items/{entry_id}", "/settings", "/settings/genres/{genre_id}"):
+    for page in ("/", "/items/{entry_id}", "/settings", "/settings/genres/{genre_id}",
+                 "/settings/personas/{persona_id}"):
         app.add_api_route(page, _index, include_in_schema=False)
 
     def _static(name: str):

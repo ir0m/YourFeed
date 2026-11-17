@@ -1,12 +1,16 @@
+/** A summary of an article, or a post by a persona (with its name as `author` and no title). */
 export interface Card {
   id: string
+  kind: 'article' | 'post'
   title: string
+  author: string | null
   body: string
   added_at: string
 }
 
-export interface Detail {
+export interface ArticleDetail {
   id: string
+  kind: 'article'
   title: string
   facts: string
   interpretation: string
@@ -17,6 +21,17 @@ export interface Detail {
   published_at: string | null
   added_at: string
 }
+
+export interface PostDetail {
+  id: string
+  kind: 'post'
+  author: string
+  profile: string
+  body: string
+  added_at: string
+}
+
+export type Detail = ArticleDetail | PostDetail
 
 export interface Page {
   items: Card[]
@@ -73,6 +88,7 @@ export interface Settings extends SettingsValues {
   refresh_requested_at: string | null
   last_run: Run | null
   genres: GenreRow[]
+  personas: GenreRow[]
 }
 
 export interface GenreValues {
@@ -90,6 +106,20 @@ export interface GenreValues {
 }
 
 export interface Genre extends GenreValues {
+  id: string
+  weight: number
+}
+
+export interface PersonaValues {
+  name: string
+  profile: string
+  topics: string
+  tone: string
+  min_chars: number
+  max_chars: number
+}
+
+export interface Persona extends PersonaValues {
   id: string
   weight: number
 }
@@ -127,4 +157,12 @@ export const api = {
   setWeight: (id: string, weight: number) =>
     request<{ genres: GenreRow[] }>(`/v1/genres/${encodeURIComponent(id)}`, { method: 'PATCH', body: { weight } }),
   deleteGenre: (id: string) => request<void>(`/v1/genres/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  persona: (id: string) => request<Persona>(`/v1/personas/${encodeURIComponent(id)}`),
+  createPersona: (values: PersonaValues) =>
+    request<Persona>('/v1/personas', { method: 'POST', body: values }),
+  savePersona: (id: string, values: PersonaValues) =>
+    request<Persona>(`/v1/personas/${encodeURIComponent(id)}`, { method: 'PUT', body: values }),
+  setPersonaWeight: (id: string, weight: number) =>
+    request<{ personas: GenreRow[] }>(`/v1/personas/${encodeURIComponent(id)}`, { method: 'PATCH', body: { weight } }),
+  deletePersona: (id: string) => request<void>(`/v1/personas/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

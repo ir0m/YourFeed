@@ -15,12 +15,15 @@ from yourfeed.db import WORKER_LOCK, get_engine
 router = APIRouter(prefix="/v1")
 PAGE_SIZE = 50
 
+# An entry is a summary of an article (item and genre) or a persona's post.
 ENTRY_QUERY = """
     SELECT e.id, e.title, e.facts, e.interpretation, e.added_at,
-           i.url, i.title AS original_title, i.published_at, i.site_name, g.name AS genre
+           i.url, i.title AS original_title, i.published_at, i.site_name, g.name AS genre,
+           p.name AS author, p.profile
     FROM timeline_entries e
-    JOIN items i ON i.id = e.item_id
-    JOIN genres g ON g.id = e.genre_id
+    LEFT JOIN items i ON i.id = e.item_id
+    LEFT JOIN genres g ON g.id = e.genre_id
+    LEFT JOIN personas p ON p.id = e.persona_id
 """
 
 # True while the worker holds its lock, that is, while an update is running.
@@ -64,7 +67,8 @@ def timeline(cursor: str | None = None, engine: Engine = Depends(get_engine)) ->
                                        + " ORDER BY e.added_at DESC, e.id DESC LIMIT :limit"),
                                   params).mappings().all()
         updating = connection.execute(text(UPDATING_QUERY), {"key": WORKER_LOCK}).scalar_one()
-    items = [{"id": str(row["id"]), "title": row["title"], "body": row["facts"] + row["interpretation"],
+    items = [{"id": str(row["id"]), "kind": "post" if row["author"] is not None else "article",
+              "title": row["title"], "author": row["author"], "body": row["facts"] + row["interpretation"],
               "added_at": row["added_at"].isoformat()} for row in rows]
     next_cursor = (f"{rows[-1]['added_at'].isoformat()}|{rows[-1]['id']}"
                    if len(rows) == PAGE_SIZE else None)
@@ -78,7 +82,10 @@ def timeline_item(entry_id: UUID, engine: Engine = Depends(get_engine)) -> dict:
                                  {"id": entry_id, "cutoff": _cutoff(engine)}).mappings().one_or_none()
     if row is None:
         raise HTTPException(404, "not found")
-    return {"id": str(row["id"]), "title": row["title"], "facts": row["facts"],
+    if row["author"] is not None:
+        return {"id": str(row["id"]), "kind": "post", "author": row["author"], "profile": row["profile"],
+                "body": row["facts"], "added_at": row["added_at"].isoformat()}
+    return {"id": str(row["id"]), "kind": "article", "title": row["title"], "facts": row["facts"],
             "interpretation": row["interpretation"], "genre": row["genre"],
             "original_title": row["original_title"], "url": row["url"], "source": _source_name(row),
             "published_at": row["published_at"].isoformat() if row["published_at"] else None,
